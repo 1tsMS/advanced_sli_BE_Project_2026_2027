@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
@@ -27,6 +28,7 @@ from sli_backend.core.serial_manager import SerialManager
 from sli_backend.core.packet_parser import PacketParser
 from sli_backend.core.command_router import CommandRouter
 from sli_backend.core.session_logger import SessionLogger
+from sli_backend.core.load_chart import LoadChartManager
 from sli_backend.api.models import TelemetryFrame, DebugReport
 from sli_backend.api.ws_endpoint import (
     telemetry_websocket_endpoint,
@@ -49,12 +51,49 @@ serial_mgr   = SerialManager()
 cmd_router   = CommandRouter(serial_mgr)
 session_log  = SessionLogger()
 pkt_parser   = PacketParser()
+chart_mgr    = LoadChartManager(cmd_router)
+
+# ======================== LIFESPAN (STARTUP / SHUTDOWN) ========================
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Wire up subsystems and start the packet loop; clean up on shutdown."""
+    logger.info("=== Advanced SLI Backend starting ===")
+
+    # Inject serial + logging into REST endpoints
+    init_endpoints(serial_mgr, cmd_router, session_log, chart_mgr)
+
+    # Register PacketParser callbacks → WebSocket + logger
+    pkt_parser.set_callbacks(
+        on_telemetry=_on_telemetry,
+        on_debug=_on_debug,
+        on_ack=_on_ack,
+        on_loadchart=chart_mgr.handle_line,
+    )
+
+    # Launch background packet processing loop
+    loop_task = asyncio.create_task(packet_processing_loop())
+
+    logger.info(f"REST API:  http://{API_HOST}:{API_PORT}/api/")
+    logger.info(f"WebSocket: ws://{API_HOST}:{API_PORT}/ws/telemetry")
+
+    yield
+
+    # Graceful cleanup
+    loop_task.cancel()
+    if session_log.is_active:
+        session_log.end_session()
+    if serial_mgr.is_connected:
+        await serial_mgr.disconnect()
+    logger.info("=== Backend shutdown complete ===")
+
 
 # ======================== FASTAPI APP ========================
 app = FastAPI(
     title="Advanced SLI Backend",
     description="Safe Load Indicator middleware — serial ↔ WebSocket bridge",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS — allow Electron and Vite dev server
@@ -69,40 +108,6 @@ app.add_middleware(
 # Register routes
 app.include_router(rest_router)
 app.add_api_websocket_route("/ws/telemetry", telemetry_websocket_endpoint)
-
-# ======================== STARTUP / SHUTDOWN ========================
-
-@app.on_event("startup")
-async def startup() -> None:
-    """Wire up subsystems and start the packet processing loop."""
-    logger.info("=== Advanced SLI Backend starting ===")
-
-    # Inject serial + logging into REST endpoints
-    init_endpoints(serial_mgr, cmd_router, session_log)
-
-    # Register PacketParser callbacks → WebSocket + logger
-    pkt_parser.set_callbacks(
-        on_telemetry=_on_telemetry,
-        on_debug=_on_debug,
-        on_ack=_on_ack,
-    )
-
-    # Launch background packet processing loop
-    asyncio.create_task(packet_processing_loop())
-
-    logger.info(f"REST API:  http://{API_HOST}:{API_PORT}/api/")
-    logger.info(f"WebSocket: ws://{API_HOST}:{API_PORT}/ws/telemetry")
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    """Graceful cleanup."""
-    if session_log.is_active:
-        session_log.end_session()
-    if serial_mgr.is_connected:
-        await serial_mgr.disconnect()
-    logger.info("=== Backend shutdown complete ===")
-
 
 # ======================== PACKET PROCESSING LOOP ========================
 
@@ -127,6 +132,7 @@ async def packet_processing_loop() -> None:
             break
         except Exception as e:
             logger.error(f"Packet loop error: {e}")
+            await asyncio.sleep(0.1)   # never spin (or flood the log) on a persistent error
 
 
 # ======================== PACKET CALLBACKS ========================

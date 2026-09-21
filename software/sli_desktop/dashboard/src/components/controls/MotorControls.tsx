@@ -1,16 +1,10 @@
 import { useCallback, useState, useEffect } from "react";
 import { Square, Gamepad2 } from "lucide-react";
+import { useHoldToMove } from "../../hooks/useHoldToMove";
+import { useGamepad } from "../../hooks/useGamepad";
+import { AXES, type AxisId } from "../../config/axes";
 
 const API_BASE = "http://localhost:8000/api";
-
-type AxisId = 1 | 2 | 3 | 4;
-
-const AXES: { id: AxisId; name: string; negLabel: string; posLabel: string }[] = [
-  { id: 1, name: "Swing",    negLabel: "◄", posLabel: "►" },
-  { id: 2, name: "Boom",     negLabel: "▼", posLabel: "▲" },
-  { id: 3, name: "Extend",   negLabel: "◄", posLabel: "►" },
-  { id: 4, name: "Winch",    negLabel: "▼", posLabel: "▲" },
-];
 
 async function apiPost(path: string, body: object) {
   try {
@@ -31,6 +25,7 @@ interface MotorControlsProps {
 export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
   const [pressed, setPressed] = useState<Record<string, boolean>>({});
   const [gpConnected, setGpConnected] = useState(false);
+  const hold = useHoldToMove();
 
   useEffect(() => {
     const on  = () => setGpConnected(true);
@@ -43,12 +38,14 @@ export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
     };
   }, []);
 
-  const startMotor = useCallback(async (axis: AxisId, dir: 0 | 1) => {
+  // Hold-to-move is a dead-man: the command is repeated while held, and the
+  // firmware stops the axis if the repeats stop (see useHoldToMove).
+  const startMotor = useCallback((axis: AxisId, dir: 0 | 1) => {
     const key = `${axis}-${dir}`;
     if (pressed[key]) return;
     setPressed(p => ({ ...p, [key]: true }));
-    await apiPost("/command", { command: `M${axis} S${speed} D${dir}` });
-  }, [speed, pressed]);
+    hold.start(axis, speed, dir);
+  }, [speed, pressed, hold]);
 
   const stopAxis = useCallback(async (axis: AxisId) => {
     setPressed(p => {
@@ -56,13 +53,17 @@ export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
       delete n[`${axis}-0`]; delete n[`${axis}-1`];
       return n;
     });
-    await apiPost("/command", { command: `M0 A${axis}` });
-  }, []);
+    await hold.stop(axis);
+  }, [hold]);
 
   const stopAll = useCallback(async () => {
     setPressed({});
+    hold.cancelAll();          // no more heartbeats, then latch the E-stop
     await apiPost("/estop", {});
-  }, []);
+  }, [hold]);
+
+  // Xbox / standard gamepad: same dead-man path as the buttons; B = E-stop
+  useGamepad({ enabled: gpConnected, maxSpeed: speed, hold, onEstop: stopAll });
 
   return (
     <div className="panel" style={{ height: "100%" }}>
@@ -81,11 +82,11 @@ export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
             </div>
             <div className="axis-btns">
               <button
-                className={`mtr-btn ${pressed[`${ax.id}-0`] ? "pressed" : ""}`}
-                onMouseDown={() => startMotor(ax.id, 0)}
+                className={`mtr-btn ${pressed[`${ax.id}-${ax.negDir}`] ? "pressed" : ""}`}
+                onMouseDown={() => startMotor(ax.id, ax.negDir)}
                 onMouseUp={() => stopAxis(ax.id)}
-                onMouseLeave={() => { if (pressed[`${ax.id}-0`]) stopAxis(ax.id); }}
-                onTouchStart={e => { e.preventDefault(); startMotor(ax.id, 0); }}
+                onMouseLeave={() => { if (pressed[`${ax.id}-${ax.negDir}`]) stopAxis(ax.id); }}
+                onTouchStart={e => { e.preventDefault(); startMotor(ax.id, ax.negDir); }}
                 onTouchEnd={() => stopAxis(ax.id)}
               >
                 {ax.negLabel}
@@ -98,11 +99,11 @@ export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
                 <Square size={9} />
               </button>
               <button
-                className={`mtr-btn ${pressed[`${ax.id}-1`] ? "pressed" : ""}`}
-                onMouseDown={() => startMotor(ax.id, 1)}
+                className={`mtr-btn ${pressed[`${ax.id}-${ax.posDir}`] ? "pressed" : ""}`}
+                onMouseDown={() => startMotor(ax.id, ax.posDir)}
                 onMouseUp={() => stopAxis(ax.id)}
-                onMouseLeave={() => { if (pressed[`${ax.id}-1`]) stopAxis(ax.id); }}
-                onTouchStart={e => { e.preventDefault(); startMotor(ax.id, 1); }}
+                onMouseLeave={() => { if (pressed[`${ax.id}-${ax.posDir}`]) stopAxis(ax.id); }}
+                onTouchStart={e => { e.preventDefault(); startMotor(ax.id, ax.posDir); }}
                 onTouchEnd={() => stopAxis(ax.id)}
               >
                 {ax.posLabel}

@@ -38,12 +38,6 @@ public:
         }
     }
 
-    /** Read a single FSR (0-indexed). */
-    uint16_t readSingle(uint8_t index) {
-        if (index >= 4) return 0;
-        return (uint16_t)analogRead(_pins[index]);
-    }
-
 private:
     uint8_t _pins[4];
 };

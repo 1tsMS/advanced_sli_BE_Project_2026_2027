@@ -1,10 +1,11 @@
 """
 PacketParser — parses raw ASCII lines from ESP32 into typed objects.
 
-Handles two packet types:
+Handles these packet types:
   $T  → Telemetry frame (sensor data)
   $D  → Debug report lines (I2C scan results)
   $ACK → Command acknowledgements (forwarded to WebSocket)
+  $LC → Load chart upload / read-back replies (forwarded to LoadChartManager)
 """
 from __future__ import annotations
 import time
@@ -27,17 +28,20 @@ class PacketParser:
         self._on_telemetry = None
         self._on_debug = None
         self._on_ack = None
+        self._on_loadchart = None
 
     def set_callbacks(
         self,
         on_telemetry=None,
         on_debug=None,
         on_ack=None,
+        on_loadchart=None,
     ) -> None:
         """Register callbacks invoked when packets are fully parsed."""
         self._on_telemetry = on_telemetry
         self._on_debug = on_debug
         self._on_ack = on_ack
+        self._on_loadchart = on_loadchart
 
     def parse_line(self, line: str) -> None:
         """
@@ -59,6 +63,11 @@ class PacketParser:
             if self._on_ack:
                 self._on_ack(line)
 
+        elif line.startswith("$LC,"):
+            # Load chart replies — consumed by LoadChartManager
+            if self._on_loadchart:
+                self._on_loadchart(line)
+
         else:
             # Unrecognized line — log for visibility but don't crash
             logger.debug(f"Unhandled ESP32 line: {line}")
@@ -71,7 +80,7 @@ class PacketParser:
         """
         Parse $T CSV line into TelemetryFrame.
         Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
-                   ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
+                   ropeLenMM,fsr1,fsr2,fsr3,fsr4,boomLean,statusFlags,
                    safeLimit,loadPct,alarmLvl
         """
         try:
@@ -92,8 +101,8 @@ class PacketParser:
                 ropeLength    = float(parts[6]),
                 fsr           = [int(parts[7]), int(parts[8]),
                                  int(parts[9]), int(parts[10])],
-                imuRoll       = float(parts[11]),
-                imuPitch      = float(parts[12]),
+                boomLean      = float(parts[11]),
+                statusFlags   = int(parts[12]),
                 safeLoadLimit = float(parts[13]),
                 loadPercent   = float(parts[14]),
                 alarmLevel    = int(parts[15]),
@@ -131,9 +140,9 @@ class PacketParser:
         address = parts[2] if len(parts) > 2 else None
         status  = parts[3] if len(parts) > 3 else (parts[2] if len(parts) > 2 else "?")
 
-        # For FSR/N20 lines: parts = ["$D", "FSR1", "3412"]
+        # For FSR/N20/telescope-calibration lines: parts = ["$D", "FSR1", "3412"]
         # address=None, status=raw value
-        if tag.startswith("FSR") or tag == "N20_TICKS":
+        if tag.startswith("FSR") or tag == "N20_TICKS" or tag.startswith("TELE_"):
             entry = DebugEntry(bus=tag, address=None, status=address or "?")
         else:
             entry = DebugEntry(bus=tag, address=address, status=status)

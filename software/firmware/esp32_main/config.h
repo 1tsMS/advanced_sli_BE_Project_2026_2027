@@ -73,12 +73,18 @@
 // Stack sizes (bytes) — increase if you see stack overflow crashes
 #define SENSOR_TASK_STACK     4096
 #define TELEMETRY_TASK_STACK  4096
-#define COMMAND_TASK_STACK    4096
+#define COMMAND_TASK_STACK    8192   // LC GET / DBG / CAL3 buffers on the stack + float printf
 
 // Task priorities — higher number = higher priority
 #define SENSOR_TASK_PRIORITY     5   // Time-critical sensor reads
 #define COMMAND_TASK_PRIORITY    4   // Must respond to E-stop quickly
 #define TELEMETRY_TASK_PRIORITY  3   // Can tolerate slight delays
+
+// Safety task: load calculation + alarm levels (runs on core 1)
+#define SAFETY_RATE_HZ        50
+#define SAFETY_PERIOD_MS      (1000 / SAFETY_RATE_HZ)
+#define SAFETY_TASK_STACK     4096
+#define SAFETY_TASK_PRIORITY  6   // Highest: a safety check must never wait behind sensor reads
 
 // ======================== ENCODER CONVERSIONS ========================
 // N20 encoder: ticks per full drum revolution
@@ -95,9 +101,36 @@
 #define TELE_MM_PER_REVOLUTION  19.048f
 #define TELE_DEFAULT_INVERT     true
 
-// Crane physical geometry
-#define BASE_BOOM_LENGTH_MM     225.0f   // 22.5 cm physical base boom
 
+// ======================== LOAD / ALARM SETTINGS ========================
+// Safe working load used ONLY while no load chart has been uploaded
+#define SAFE_LOAD_DEFAULT_KG        5.0f
+// Alarm thresholds as % of the safe load (WARN at 80, CRITICAL at 100)
+#define ALARM_WARN_PERCENT          80.0f
+#define ALARM_CRITICAL_PERCENT      100.0f
+// A level is only left once load falls this far below its threshold (stops flapping)
+#define ALARM_HYSTERESIS_PERCENT    2.0f
+// Reported load% is capped here; loadPercent = 999 is reserved for "load sensor fault"
+#define LOAD_PERCENT_CAP            500.0f
+#define LOAD_PERCENT_SENSOR_FAULT   999.0f
+// Below this the load counts as zero when the safe limit is 0 kg (outside the chart)
+#define LOAD_ZERO_DEADBAND_KG       0.05f
+// The load cell is considered dead if no new HX711 sample arrives for this long
+#define LOAD_SENSOR_STALE_MS        1000
+
+// Boom lean beyond this (either direction) sets STATUS_LEAN_WARN. Display only.
+#define LEAN_WARN_DEG               5.0f
+
+// ---- Status flags (SensorData::statusFlags, sent as field 12 of the $T packet) ----
+// The dashboard shows these as-is; it does not re-derive any of them.
+#define STATUS_LOAD_FAULT    (1u << 0)  // load cell stale, or reading outside 0..MAX_VALID_LOAD_KG
+#define STATUS_BOOM_FAULT    (1u << 1)  // boom-angle IMU not responding: boom angle unreliable
+#define STATUS_EXT_FAULT     (1u << 2)  // telescope encoder not responding: extension unreliable
+#define STATUS_NO_CHART      (1u << 3)  // no load chart saved, default limit in use
+#define STATUS_OUT_OF_CHART  (1u << 4)  // position outside the load chart, limit is 0 kg
+#define STATUS_LEAN_WARN     (1u << 5)  // boom leaning sideways beyond LEAN_WARN_DEG
+#define STATUS_ESTOP         (1u << 6)  // E-stop latched, waiting for RST
+#define STATUS_BOOM_MISMATCH (1u << 7)  // IMU and boom encoder disagree: boom angle cannot be trusted
 
 // ======================== SHARED DATA STRUCTURES ========================
 
@@ -110,7 +143,6 @@ struct SensorData {
     // Angle values (degrees, 0.0–360.0)
     float boomAngle;
     float swingAngle;
-    float teleAngle;         // raw AS5600 angle for telescope
 
     // Computed linear values
     float extensionMM;       // telescope linear extension
@@ -118,30 +150,44 @@ struct SensorData {
 
     // Load
     float loadCellRaw;       // kg — direct HX711 reading, NOT angle-compensated
-    float actualLoadKg;      // kg — boom-angle-compensated (Phase 3, 0.0 for now)
+    float actualLoadKg;      // kg — angle-compensated (written by SafetyTask)
 
-    // IMU orientation (complementary-filtered)
-    float imuRoll;           // degrees
-    float imuPitch;          // degrees
+    // Boom lean: sideways tilt of the boom (rotation about its own axis), from the
+    // boom-mounted IMU. NOT a chassis tilt: it also moves with swing and boom twist.
+    float boomLean;          // degrees
 
     // Outrigger force sensors (raw ADC 0–4095)
     uint16_t fsr[4];
 
-    // Safety status (Phase 3 defaults)
-    float safeLoadLimit;     // kg — from load chart (default 5.0)
-    float loadPercent;       // (actualLoad / safeLimit) × 100
+    // Safety status (all written by SafetyTask)
+    float safeLoadLimit;     // kg — from the load chart (SAFE_LOAD_DEFAULT_KG if no chart)
+    float loadPercent;       // (actualLoad / safeLimit) × 100; 999 = load sensor fault
     uint8_t alarmLevel;      // 0=OK, 1=WARN, 2=CRITICAL, 3=ESTOP
 
     // System health
     bool sensorsOK;          // true if all expected I2C devices respond
+    bool loadSensorOK;       // HX711 is delivering fresh samples (written by SensorTask)
+    bool boomSensorOK;       // boom-angle IMU responding (written by SensorTask)
+    bool boomMismatch;       // IMU and boom encoder disagree (written by SensorTask)
+    bool extSensorOK;        // telescope encoder responding (written by SensorTask)
+    uint16_t statusFlags;    // STATUS_* bits, written by SafetyTask, sent in the $T packet
 };
+
+// ======================== MOTION SAFETY ========================
+// Highest speed value accepted in an M-command (steps/s for steppers).
+// The winch scales this range onto its 0-255 PWM.
+#define MOTOR_SPEED_MAX      2500
+// Dead-man timeout: a motor keeps running only while its M-command keeps being
+// repeated. If nothing arrives for this long (link lost, browser frozen, button
+// release missed) the axis is stopped. Same value is used in mega_executor.ino.
+#define MOTION_TIMEOUT_MS    400
 
 /**
  * Motor command — parsed from G-code, forwarded to Mega or DRV8833.
  */
 struct MotorCommand {
     uint8_t  axis;       // 1=Swing, 2=Lift, 3=Tele, 4=Winch, 0=StopAxis
-    uint16_t speed;      // 0–255
+    uint16_t speed;      // 0–MOTOR_SPEED_MAX (steps/s)
     uint8_t  direction;  // 0 or 1
     uint8_t  stopAxis;   // which axis to stop (for M0 Ax commands)
     bool     isEstop;    // true → emergency stop ALL motors
@@ -153,12 +199,16 @@ struct MotorCommand {
 enum CalCommand : uint8_t {
     CAL_TARE_LOAD   = 0,  // Zero the load cell
     CAL_ZERO_IMU    = 1,  // Set current IMU orientation as zero
-    CAL_RESET_TELE  = 2   // Reset telescope extension to 0
+    CAL_RESET_TELE  = 2,  // Reset telescope extension to 0
+    CAL_LOAD_GAIN   = 3   // Record / clear the boom-angle load correction
 };
 
 // ======================== GLOBAL RTOS HANDLES ========================
 // Declared here, defined in esp32_main.ino
 extern SemaphoreHandle_t sensorMutex;
-extern QueueHandle_t     motorCommandQueue;
+
+// E-stop latch: set by T0, blocks all motion commands until an explicit RST.
+// Kept separate from SensorData.alarmLevel because SensorTask rewrites that every cycle.
+extern volatile bool g_estopLatched;
 
 #endif // SLI_CONFIG_H

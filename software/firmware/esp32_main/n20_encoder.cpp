@@ -41,13 +41,6 @@ long N20Encoder::getCount() {
     return c;
 }
 
-void N20Encoder::resetCount() {
-    noInterrupts();
-    _count = 0;
-    interrupts();
-    _ropeLengthMM = 0.0f;
-}
-
 float N20Encoder::getRopeLengthMM() {
     long count = getCount();
     _ropeLengthMM = (float)count * ROPE_MM_PER_TICK;

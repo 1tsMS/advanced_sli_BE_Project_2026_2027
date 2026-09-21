@@ -10,6 +10,11 @@ void MegaBridge::begin(HardwareSerial* serial) {
     _connected = true;
 }
 
+void MegaBridge::sendReset() {
+    if (!_megaSerial || !_connected) return;
+    _megaSerial->println("RST");
+}
+
 void MegaBridge::sendMotorCommand(const MotorCommand& cmd) {
     if (!_megaSerial || !_connected) return;
 
@@ -34,34 +39,4 @@ void MegaBridge::sendMotorCommand(const MotorCommand& cmd) {
         snprintf(line, sizeof(line), "M0 A%u", cmd.stopAxis);
         _megaSerial->println(line);
     }
-}
-
-void MegaBridge::sendRaw(const char* gcode) {
-    if (!_megaSerial || !_connected) return;
-    _megaSerial->println(gcode);
-}
-
-bool MegaBridge::hasResponse() {
-    if (!_megaSerial) return false;
-    return _megaSerial->available() > 0;
-}
-
-int MegaBridge::readResponse(char* buffer, size_t bufLen) {
-    if (!_megaSerial || !_megaSerial->available()) return 0;
-
-    int i = 0;
-    unsigned long timeout = millis() + 10;  // 10ms max wait
-
-    while (i < (int)(bufLen - 1) && millis() < timeout) {
-        if (_megaSerial->available()) {
-            char c = _megaSerial->read();
-            if (c == '\n' || c == '\r') {
-                if (i > 0) break;  // End of line
-                continue;          // Skip leading newlines
-            }
-            buffer[i++] = c;
-        }
-    }
-    buffer[i] = '\0';
-    return i;
 }

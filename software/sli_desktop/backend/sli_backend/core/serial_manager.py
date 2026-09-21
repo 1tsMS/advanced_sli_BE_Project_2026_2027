@@ -140,8 +140,9 @@ class SerialManager:
 
         while self._connected:
             try:
-                # Non-blocking read — returns whatever is in buffer
-                chunk = await asyncio.get_event_loop().run_in_executor(
+                # Blocking read (up to the port timeout) runs in a worker
+                # thread, so the event loop stays free and we don't spin.
+                chunk = await asyncio.get_running_loop().run_in_executor(
                     None, self._read_chunk
                 )
 
@@ -171,8 +172,6 @@ class SerialManager:
                     self._rx_count = 0
                     self._last_rate_check = now
 
-                await asyncio.sleep(0)  # Yield to event loop
-
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -181,12 +180,16 @@ class SerialManager:
                 break
 
     def _read_chunk(self) -> bytes:
-        """Blocking read — called via executor to avoid blocking event loop."""
-        if self._serial and self._serial.is_open:
-            try:
-                waiting = self._serial.in_waiting
-                if waiting > 0:
-                    return self._serial.read(waiting)
-            except serial.SerialException:
-                pass
-        return b""
+        """
+        Blocking read — called via executor to avoid blocking the event loop.
+        Waits up to the port timeout for one byte, then drains the rest of the
+        buffer. A SerialException (e.g. USB unplugged) propagates so the reader
+        loop can mark the link as disconnected.
+        """
+        if not (self._serial and self._serial.is_open):
+            return b""
+        first = self._serial.read(1)
+        if not first:
+            return b""
+        waiting = self._serial.in_waiting
+        return first + self._serial.read(waiting) if waiting else first

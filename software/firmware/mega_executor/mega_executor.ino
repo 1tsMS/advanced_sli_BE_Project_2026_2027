@@ -31,6 +31,16 @@
 #define LIFT_DIR    48
 #define LIFT_EN     62
 
+// ======================== SAFETY SETTINGS ========================
+// Dead-man timeout: an axis keeps stepping only while its M-command keeps being
+// repeated by the ESP32. Must match MOTION_TIMEOUT_MS in the ESP32 config.h.
+#define MOTION_TIMEOUT_MS  400
+
+// 1 = E-stop also disables the stepper drivers (no holding torque, so a loaded
+//     boom relies on the gearing to hold). 0 = E-stop only stops stepping and
+//     the drivers keep holding position.
+#define ESTOP_DISABLES_DRIVERS  1
+
 // ======================== MOTOR STATE ========================
 struct StepperState {
     uint8_t stepPin;
@@ -40,13 +50,17 @@ struct StepperState {
     uint8_t direction;
     uint16_t speed;        // Delay between steps in microseconds
     unsigned long lastStepTime;
+    unsigned long lastCmdMs;   // millis() of the last M-command for this axis (watchdog)
 };
 
 StepperState motors[3] = {
-    {SWING_STEP, SWING_DIR, SWING_EN, false, 0, 1000, 0},  // M1 = Swing
-    {LIFT_STEP,  LIFT_DIR,  LIFT_EN,  false, 0, 1000, 0},   // M2 = Lift
-    {TELE_STEP,  TELE_DIR,  TELE_EN,  false, 0, 1000, 0}    // M3 = Telescope
+    {SWING_STEP, SWING_DIR, SWING_EN, false, 0, 1000, 0, 0},  // M1 = Swing
+    {LIFT_STEP,  LIFT_DIR,  LIFT_EN,  false, 0, 1000, 0, 0},   // M2 = Lift
+    {TELE_STEP,  TELE_DIR,  TELE_EN,  false, 0, 1000, 0, 0}    // M3 = Telescope
 };
+
+// Set by T0, cleared by RST. While set, M1-M3 commands are ignored.
+bool estopped = false;
 
 // ======================== SERIAL BUFFER ========================
 char cmdBuffer[64];
@@ -99,7 +113,16 @@ void loop() {
         }
     }
 
-    // 2. Step any running motors using non-blocking timing
+    // 2. Dead-man watchdog: stop any axis whose command stream has gone quiet
+    unsigned long nowMs = millis();
+    for (int i = 0; i < 3; i++) {
+        if (motors[i].running && (nowMs - motors[i].lastCmdMs) > MOTION_TIMEOUT_MS) {
+            motors[i].running = false;
+            Serial.print("WATCHDOG stopped axis "); Serial.println(i + 1);
+        }
+    }
+
+    // 3. Step any running motors using non-blocking timing
     unsigned long now = micros();
     for (int i = 0; i < 3; i++) {
         if (motors[i].running && (now - motors[i].lastStepTime >= motors[i].speed)) {
@@ -121,6 +144,17 @@ void processCommand(const char* cmd) {
         return;
     }
 
+    // --- RST: Clear E-stop and re-enable drivers ---
+    if (cmd[0] == 'R' && cmd[1] == 'S' && cmd[2] == 'T') {
+        estopped = false;
+        for (int i = 0; i < 3; i++) {
+            digitalWrite(motors[i].enPin, LOW);  // Enable drivers (active LOW)
+        }
+        Serial.println("E-STOP CLEARED");
+        Serial1.println("$ACK,RST");
+        return;
+    }
+
     // --- M0 Ax: Stop specific axis ---
     if (cmd[0] == 'M' && cmd[1] == '0') {
         int axis = extractParam(cmd, 'A', 0);
@@ -133,6 +167,8 @@ void processCommand(const char* cmd) {
 
     // --- M1-M3: Motor commands ---
     if (cmd[0] == 'M' && cmd[1] >= '1' && cmd[1] <= '3') {
+        if (estopped) return;          // Latched E-stop: ignore motion until RST
+
         int axis = cmd[1] - '0';       // 1, 2, or 3
         int speed = extractParam(cmd, 'S', 0);
         int dir   = extractParam(cmd, 'D', 0);
@@ -149,6 +185,7 @@ void processCommand(const char* cmd) {
         motors[idx].speed = 1000000UL / speed;
         motors[idx].direction = dir;
         motors[idx].running = true;
+        motors[idx].lastCmdMs = millis();   // Feed the dead-man watchdog
 
         // Set direction pin
         digitalWrite(motors[idx].dirPin, dir ? HIGH : LOW);
@@ -161,10 +198,12 @@ void processCommand(const char* cmd) {
 
 // ======================== EMERGENCY STOP ========================
 void emergencyStop() {
+    estopped = true;
     for (int i = 0; i < 3; i++) {
         motors[i].running = false;
-        // Optionally disable drivers for immediate coast-down:
-        // digitalWrite(motors[i].enPin, HIGH);  // HIGH = disabled
+#if ESTOP_DISABLES_DRIVERS
+        digitalWrite(motors[i].enPin, HIGH);  // HIGH = disabled (active LOW enable)
+#endif
     }
 }
 

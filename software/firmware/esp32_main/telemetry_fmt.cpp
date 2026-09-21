@@ -6,10 +6,10 @@
 
 int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufLen) {
     // Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
-    //            ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
+    //            ropeLenMM,fsr1,fsr2,fsr3,fsr4,boomLean,statusFlags,
     //            safeLimit,loadPct,alarmLvl\n
     int written = snprintf(buffer, bufLen,
-        "$T,%.2f,%.1f,%.2f,%.2f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.2f,%.1f,%u\n",
+        "$T,%.2f,%.1f,%.2f,%.2f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%u,%.2f,%.1f,%u\n",
         data.boomAngle,
         data.extensionMM,
         data.loadCellRaw,
@@ -17,8 +17,8 @@ int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufL
         data.swingAngle,
         data.ropeLengthMM,
         data.fsr[0], data.fsr[1], data.fsr[2], data.fsr[3],
-        data.imuRoll,
-        data.imuPitch,
+        data.boomLean,
+        (unsigned)data.statusFlags,
         data.safeLoadLimit,
         data.loadPercent,
         data.alarmLevel
@@ -31,6 +31,9 @@ void TelemetryFormatter::formatDebugReport(
     bool mpuOK, bool hx711OK,
     const uint16_t fsr[4],
     long n20Ticks,
+    float teleScale, bool teleInvert,
+    const GainPoint* gains, uint8_t gainCount,
+    uint8_t boomCheckState, float boomCheckErrDeg,
     char* buffer, size_t bufLen
 ) {
     // Build multi-line debug response
@@ -63,6 +66,23 @@ void TelemetryFormatter::formatDebugReport(
 
     pos += snprintf(buffer + pos, bufLen - pos,
         "$D,N20_TICKS,%ld\n", n20Ticks);
+
+    // Telescope calibration currently held in flash (single source of truth)
+    pos += snprintf(buffer + pos, bufLen - pos,
+        "$D,TELE_SCALE,%.4f\n", teleScale);
+    pos += snprintf(buffer + pos, bufLen - pos,
+        "$D,TELE_INV,%d\n", teleInvert ? 1 : 0);
+
+    // IMU vs boom-encoder cross-check: $D,BOOM_XCHECK,<error deg>,<state>
+    static const char* const kStates[] = { "OFF", "LEARNING", "OK", "MISMATCH" };
+    pos += snprintf(buffer + pos, bufLen - pos,
+        "$D,BOOM_XCHECK,%.1f,%s\n", boomCheckErrDeg, kStates[boomCheckState > 3 ? 0 : boomCheckState]);
+
+    // Boom-angle load correction points (one line each): $D,GAIN,<angle>,<gain>
+    for (uint8_t i = 0; i < gainCount; i++) {
+        pos += snprintf(buffer + pos, bufLen - pos,
+            "$D,GAIN,%.1f,%.4f\n", gains[i].angle, gains[i].gain);
+    }
 
     pos += snprintf(buffer + pos, bufLen - pos,
         "$D,END\n");

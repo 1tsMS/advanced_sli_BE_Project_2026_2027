@@ -26,6 +26,12 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
         return PARSE_OK;
     }
 
+    // --- RST: Clear E-stop latch ---
+    if (strncmp(line, "RST", 3) == 0) {
+        out->type = CMD_RESET;
+        return PARSE_OK;
+    }
+
     // --- M0 Ax: Stop specific axis ---
     if (strncmp(line, "M0", 2) == 0) {
         out->type = CMD_STOP_AXIS;
@@ -43,8 +49,8 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
         out->motor.direction = (uint8_t)extractParam(line, 'D', 0);
         out->motor.isEstop = false;
 
-        // Clamp speed to 0-2500
-        if (out->motor.speed > 2500) out->motor.speed = 2500;
+        // Clamp speed to 0-MOTOR_SPEED_MAX
+        if (out->motor.speed > MOTOR_SPEED_MAX) out->motor.speed = MOTOR_SPEED_MAX;
         // Clamp direction to 0 or 1
         if (out->motor.direction > 1) out->motor.direction = 1;
 
@@ -71,8 +77,54 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
                 out->teleInvert = (int8_t)extractParam(line, 'I', -1);
                 return PARSE_OK;
             }
+            case '3': {
+                out->calType  = CAL_LOAD_GAIN;
+                out->calClear = (strstr(line, "CLEAR") != NULL);
+                out->calWeight = extractFloatParam(line, 'W', 0.0f);
+                // Recording needs a weight; CLEAR needs nothing
+                if (!out->calClear && out->calWeight <= 0.0f) return PARSE_INVALID_PARAMS;
+                return PARSE_OK;
+            }
             default:  return PARSE_INVALID_PARAMS;
         }
+    }
+
+    // --- LC: Load chart upload / read-back ---
+    // Malformed LC lines still return PARSE_OK with LC_OP_INVALID so the
+    // command task can answer with $LC,ERR instead of dropping them silently.
+    if (line[0] == 'L' && line[1] == 'C' && (line[2] == ' ' || line[2] == '\0')) {
+        out->type = CMD_LOADCHART;
+        out->lcOp = LC_OP_INVALID;
+        const char* p = line + 2;
+        while (*p == ' ') p++;
+
+        if (strncmp(p, "UPLOAD", 6) == 0) {
+            out->lcOp    = LC_OP_UPLOAD;
+            out->lcCount = (uint16_t)atoi(p + 6);
+        } else if (strncmp(p, "SAVE", 4) == 0) {
+            out->lcOp = LC_OP_SAVE;
+        } else if (strncmp(p, "GET", 3) == 0) {
+            out->lcOp = LC_OP_GET;
+        } else {
+            // "<angle>,<extension>,<limit>"
+            char* end;
+            float a = strtof(p, &end);
+            if (end != p && *end == ',') {
+                p = end + 1;
+                float e = strtof(p, &end);
+                if (end != p && *end == ',') {
+                    p = end + 1;
+                    float l = strtof(p, &end);
+                    if (end != p) {
+                        out->lcOp        = LC_OP_ENTRY;
+                        out->lcAngle     = a;
+                        out->lcExtension = e;
+                        out->lcLimit     = l;
+                    }
+                }
+            }
+        }
+        return PARSE_OK;
     }
 
     // --- DBG: Debug request ---

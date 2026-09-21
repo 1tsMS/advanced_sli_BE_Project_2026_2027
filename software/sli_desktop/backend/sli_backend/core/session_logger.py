@@ -22,7 +22,7 @@ CSV_HEADER = [
     "boomAngle", "extensionMM", "measuredLoad", "actualLoad",
     "swingAngle", "ropeLength",
     "fsr1", "fsr2", "fsr3", "fsr4",
-    "imuRoll", "imuPitch",
+    "boomLean", "statusFlags",
     "safeLoadLimit", "loadPercent", "alarmLevel"
 ]
 
@@ -69,8 +69,8 @@ class SessionLogger:
                 "fsr2":         frame.fsr[1],
                 "fsr3":         frame.fsr[2],
                 "fsr4":         frame.fsr[3],
-                "imuRoll":      round(frame.imuRoll, 3),
-                "imuPitch":     round(frame.imuPitch, 3),
+                "boomLean":     round(frame.boomLean, 3),
+                "statusFlags":  frame.statusFlags,
                 "safeLoadLimit": round(frame.safeLoadLimit, 2),
                 "loadPercent":  round(frame.loadPercent, 2),
                 "alarmLevel":   frame.alarmLevel,
@@ -106,7 +106,6 @@ class SessionLogger:
             stat = f.stat()
             sessions.append({
                 "filename": f.name,
-                "path":     str(f),
                 "size":     stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             })

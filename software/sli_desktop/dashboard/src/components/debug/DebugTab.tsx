@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { RefreshCw, RotateCcw, Ruler, Save } from "lucide-react";
 import type { TelemetryFrame } from "../../types";
+import { useHoldToMove } from "../../hooks/useHoldToMove";
+import { LoadGainCalibration } from "./LoadGainCalibration";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -29,7 +31,15 @@ const DEVICE_INFO: Record<string, { name: string; gpio: string }> = {
   "FSR4":         { name: "FSR Rear-Right",          gpio: "ADC=39" },
   "N20_WINCH":    { name: "N20 Winch Encoder",       gpio: "A=18 B=19" },
   "N20_TICKS":    { name: "N20 Winch Ticks",         gpio: "A=18 B=19" },
+  "BOOM_XCHECK":  { name: "Boom IMU vs Encoder (diff °)", gpio: "—" },
+  "TELE_SCALE":   { name: "Telescope Scale (mm/rev)", gpio: "ESP32 flash" },
+  "TELE_INV":     { name: "Telescope Direction Inverted", gpio: "ESP32 flash" },
 };
+
+// Fallback values only. Must match TELE_MM_PER_REVOLUTION / TELE_DEFAULT_INVERT in
+// firmware config.h. The live values are read back from the ESP32 flash via DBG.
+const TELE_DEFAULT_SCALE  = 19.048;
+const TELE_DEFAULT_INVERT = true;
 
 function friendlyName(bus: string, address?: string | null): string {
   if (bus === "I2C0") {
@@ -44,23 +54,24 @@ function gpioNote(bus: string): string {
 }
 
 // Calibration options for standard sensors
-type AxisChoice = "X" | "Y" | "Z";
+type AxisChoice = "X" | "Y";
+const AXIS_CHOICES: AxisChoice[] = ["X", "Y"];
 const CAL_ITEMS = [
   { key: "tare",  label: "Tare Load Cell", sub: "Zero with no load attached", path: "/calibrate/tare", hasAxis: false },
-  { key: "imu",   label: "Zero IMU / Gyro", sub: "Place system still. Select which axis maps to each angle.", path: "/calibrate/imu", hasAxis: true },
+  { key: "imu",   label: "Zero IMU / Gyro", sub: "Put the boom at its zero pose and hold it still. Select which IMU axis is each angle. Also sets the boom encoder reference for the IMU cross-check.", path: "/calibrate/imu", hasAxis: true },
 ];
 
-interface CalState { status: string; boomAxis: AxisChoice; swingAxis: AxisChoice; boomInv: boolean; swingInv: boolean; }
+interface CalState { status: string; boomAxis: AxisChoice; tiltAxis: AxisChoice; boomInv: boolean; tiltInv: boolean; }
 
-const CAL_STORAGE_KEY = "sli_debug_cal_state_v2";
+const CAL_STORAGE_KEY = "sli_debug_cal_state_v3";
 
 const DEFAULT_CAL_STATE: Record<string, CalState> = {
   imu: {
     status: "",
     boomAxis: "X",
-    swingAxis: "Y",
+    tiltAxis: "Y",
     boomInv: false,
-    swingInv: false,
+    tiltInv: false,
   },
 };
 
@@ -93,26 +104,30 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
   const termRef = useRef<HTMLDivElement>(null);
 
   // ---- Telescope Calibration & Tuning State ----
-  const [teleScale, setTeleScale] = useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("sli_tele_scale");
-      if (saved) return parseFloat(saved);
-    } catch {}
-    return 19.048;
-  });
-
-  const [teleInvert, setTeleInvert] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem("sli_tele_invert");
-      if (saved !== null) return JSON.parse(saved);
-    } catch {}
-    return true;
-  });
+  // The ESP32 flash is the source of truth; these mirror it (synced from the DBG report).
+  const [teleScale, setTeleScale] = useState<number>(TELE_DEFAULT_SCALE);
+  const [teleInvert, setTeleInvert] = useState<boolean>(TELE_DEFAULT_INVERT);
 
   const [measuredMm, setMeasuredMm] = useState<string>("50.0");
   const [jogSpeed, setJogSpeed] = useState<number>(1000);
   const [joggingDir, setJoggingDir] = useState<0 | 1 | null>(null);
+  const hold = useHoldToMove();
   const [teleStatus, setTeleStatus] = useState<string>("");
+
+  // Ask the ESP32 for a status report on open so the telescope values load from flash
+  useEffect(() => {
+    apiPost("/debug/scan");
+  }, []);
+
+  // Sync telescope calibration from the ESP32 whenever a DBG report arrives
+  useEffect(() => {
+    if (!debugReport) return;
+    const status = (bus: string) => debugReport.entries.find(e => e.bus === bus)?.status;
+    const scale = parseFloat(status("TELE_SCALE") ?? "");
+    const inv = status("TELE_INV");
+    if (Number.isFinite(scale) && scale > 0.1) setTeleScale(scale);
+    if (inv !== undefined) setTeleInvert(inv === "1");
+  }, [debugReport]);
 
   // Collect ACKs into the log
   useEffect(() => {
@@ -135,12 +150,10 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
   const runCal = async (item: typeof CAL_ITEMS[0]) => {
     const s = calState[item.key] ?? DEFAULT_CAL_STATE[item.key];
     const body = item.hasAxis ? {
-      boomAxis:    s?.boomAxis  ?? "X",
-      tiltAxis:    s?.swingAxis ?? "Y",
-      swingAxis:   s?.swingAxis ?? "Y",
-      boomInvert:  s?.boomInv  ?? false,
-      tiltInvert:  s?.swingInv ?? false,
-      swingInvert: s?.swingInv ?? false,
+      boomAxis:   s?.boomAxis ?? "X",
+      tiltAxis:   s?.tiltAxis ?? "Y",
+      boomInvert: s?.boomInv  ?? false,
+      tiltInvert: s?.tiltInv  ?? false,
     } : {};
 
     addLog(`→ ${item.label} (${item.path})`, "info");
@@ -162,10 +175,10 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
       const updated = {
         ...prev,
         [key]: {
-          boomAxis: cur?.boomAxis ?? "Y",
-          swingAxis: cur?.swingAxis ?? "X",
+          boomAxis: cur?.boomAxis ?? "X",
+          tiltAxis: cur?.tiltAxis ?? "Y",
           boomInv: cur?.boomInv ?? false,
-          swingInv: cur?.swingInv ?? false,
+          tiltInv: cur?.tiltInv ?? false,
           status: cur?.status ?? "",
           [field]: val,
         },
@@ -183,16 +196,16 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
     setTeleStatus(result.msg);
   };
 
-  const startJogM3 = async (dir: 0 | 1) => {
+  const startJogM3 = (dir: 0 | 1) => {
     setJoggingDir(dir);
-    await apiPost("/command", { command: `M3 S${jogSpeed} D${dir}` });
+    hold.start(3, jogSpeed, dir);   // repeats while held (dead-man)
     addLog(`→ M3 S${jogSpeed} D${dir} (${dir === 0 ? "Retract" : "Extend"})`, "info");
   };
 
   const stopJogM3 = async () => {
     if (joggingDir !== null) {
       setJoggingDir(null);
-      await apiPost("/command", { command: "M0 A3" });
+      await hold.stop(3);
       addLog("→ M0 A3 (Stop Axis 3)", "info");
     }
   };
@@ -208,7 +221,7 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
       addLog("⚠ Live extension is ~0mm. Jog the motor outward before measuring travel!", "err");
       return;
     }
-    const curScale = teleScale > 0.1 ? teleScale : 19.048;
+    const curScale = teleScale > 0.1 ? teleScale : TELE_DEFAULT_SCALE;
     const revs = Math.abs(liveExt) / curScale;
     if (revs < 0.05) {
       addLog("⚠ Travel distance is too small (<0.05 revs). Jog further for accurate calibration.", "err");
@@ -222,10 +235,6 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
     }
     setTeleScale(newScale);
     setTeleInvert(newInvert);
-    try {
-      localStorage.setItem("sli_tele_scale", String(newScale));
-      localStorage.setItem("sli_tele_invert", JSON.stringify(newInvert));
-    } catch {}
 
     addLog(`→ Auto-calibrating: Scale=${newScale} mm/rev, Inv=${newInvert ? 1 : 0}`, "info");
     const result = await apiPost("/calibrate/tele", { scale: newScale, invert: newInvert });
@@ -238,10 +247,6 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
       addLog("⚠ Scale must be greater than 0.1 mm/rev", "err");
       return;
     }
-    try {
-      localStorage.setItem("sli_tele_scale", String(teleScale));
-      localStorage.setItem("sli_tele_invert", JSON.stringify(teleInvert));
-    } catch {}
 
     addLog(`→ Saving to ESP32 Flash: Scale=${teleScale} mm/rev, Inv=${teleInvert ? 1 : 0}`, "info");
     const result = await apiPost("/calibrate/tele", { scale: teleScale, invert: teleInvert });
@@ -250,22 +255,16 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
   };
 
   const handleResetDefaults = async () => {
-    const defScale = 19.048;
-    const defInv = true;
-    setTeleScale(defScale);
-    setTeleInvert(defInv);
-    try {
-      localStorage.setItem("sli_tele_scale", String(defScale));
-      localStorage.setItem("sli_tele_invert", JSON.stringify(defInv));
-    } catch {}
-    addLog("→ Resetting Telescope parameters to default (19.048 mm/rev, Invert=1)", "info");
-    const result = await apiPost("/calibrate/tele", { scale: defScale, invert: defInv });
+    setTeleScale(TELE_DEFAULT_SCALE);
+    setTeleInvert(TELE_DEFAULT_INVERT);
+    addLog(`→ Resetting Telescope parameters to default (${TELE_DEFAULT_SCALE} mm/rev, Invert=${TELE_DEFAULT_INVERT ? 1 : 0})`, "info");
+    const result = await apiPost("/calibrate/tele", { scale: TELE_DEFAULT_SCALE, invert: TELE_DEFAULT_INVERT });
     addLog(`← ${result.msg}`, result.ok ? "ack" : "err");
-    setTeleStatus("Reset to default 19.048 mm/rev");
+    setTeleStatus(`Reset to default ${TELE_DEFAULT_SCALE} mm/rev`);
   };
 
   const liveExtMM = frame?.extensionMM ?? 0;
-  const activeScale = teleScale > 0.1 ? teleScale : 19.048;
+  const activeScale = teleScale > 0.1 ? teleScale : TELE_DEFAULT_SCALE;
   const liveRevs = liveExtMM / activeScale;
 
   return (
@@ -299,8 +298,8 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {debugReport.entries.map((e, i) => {
-                    const isFail = e.status === "FAIL" || e.status === "ERR" || e.status === "NOT FOUND";
+                  {debugReport.entries.filter(e => e.bus !== "GAIN").map((e, i) => {
+                    const isFail = e.status === "FAIL" || e.status === "ERR" || e.status === "NOT FOUND" || e.status === "MISMATCH";
                     const isNumeric = e.status !== "—" && e.status !== "" && !isNaN(Number(e.status));
                     const isOk = e.status === "OK" || (!isFail && isNumeric);
                     return (
@@ -359,7 +358,7 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
                         <div>
                           <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 3 }}>Boom Lift</div>
                           <div className="cal-axis-row">
-                            {(["X", "Y", "Z"] as AxisChoice[]).map(a => (
+                            {AXIS_CHOICES.map(a => (
                               <button
                                 key={a}
                                 className={`axis-badge ${(calState[item.key]?.boomAxis ?? "X") === a ? "sel" : ""}`}
@@ -377,22 +376,22 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
                             </button>
                           </div>
                         </div>
-                        {/* Chassis tilt angle axis */}
+                        {/* Boom lean axis */}
                         <div>
-                          <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 3 }}>Chassis Tilt</div>
+                          <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 3 }}>Boom Lean</div>
                           <div className="cal-axis-row">
-                            {(["X", "Y", "Z"] as AxisChoice[]).map(a => (
+                            {AXIS_CHOICES.map(a => (
                               <button
                                 key={a}
-                                className={`axis-badge ${(calState[item.key]?.swingAxis ?? "Y") === a ? "sel" : ""}`}
-                                onClick={() => setCalAxis(item.key, "swingAxis", a)}
+                                className={`axis-badge ${(calState[item.key]?.tiltAxis ?? "Y") === a ? "sel" : ""}`}
+                                onClick={() => setCalAxis(item.key, "tiltAxis", a)}
                               >
                                 {a}
                               </button>
                             ))}
                             <button
-                              className={`axis-badge ${(calState[item.key]?.swingInv ?? false) ? "sel" : ""}`}
-                              onClick={() => setCalAxis(item.key, "swingInv", !(calState[item.key]?.swingInv ?? false))}
+                              className={`axis-badge ${(calState[item.key]?.tiltInv ?? false) ? "sel" : ""}`}
+                              onClick={() => setCalAxis(item.key, "tiltInv", !(calState[item.key]?.tiltInv ?? false))}
                               style={{ marginLeft: 4 }}
                             >
                               INV
@@ -591,6 +590,9 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
                   )}
                 </div>
               </div>
+
+              {/* Boom-angle correction for the load cell */}
+              <LoadGainCalibration frame={frame ?? null} debugReport={debugReport} lastAck={lastAck} />
             </div>
           </div>
         </div>

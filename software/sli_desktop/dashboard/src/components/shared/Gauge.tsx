@@ -46,7 +46,7 @@ export function Gauge({
     const totalAngle = (270 * Math.PI) / 180;    // Full sweep = 270°
 
     const isBidirectional = min < 0;
-    const hasError = isError || value >= 900;
+    const hasError = isError;
 
     let arcStart = startAngle;
     let arcEnd = startAngle;
@@ -124,7 +124,7 @@ export function Gauge({
       // Glow effect
       ctx.beginPath();
       ctx.arc(cx, cy, radius, arcStart, arcEnd);
-      ctx.strokeStyle = hasError ? "rgba(255, 179, 71, 0.25)" : fillColor.replace(")", ", 0.3)").replace("rgb(", "rgba(");
+      ctx.strokeStyle = fillColor;
       ctx.lineWidth = size * 0.18;
       ctx.lineCap = "round";
       ctx.globalAlpha = 0.25;
@@ -149,7 +149,7 @@ export function Gauge({
     // Unit
     ctx.fillStyle = hasError ? "rgba(255, 179, 71, 0.7)" : "rgba(255,255,255,0.3)";
     ctx.font = `${size * 0.1}px Inter, sans-serif`;
-    ctx.fillText(hasError ? "UNCAL" : unit, cx, cy + size * 0.14);
+    ctx.fillText(hasError ? "FAULT" : unit, cx, cy + size * 0.14);
 
     // Label below
     ctx.fillStyle = "rgba(255,255,255,0.35)";

@@ -20,19 +20,10 @@
 
 class MPU6050Driver {
 public:
-    struct AxisMap {
-        int8_t roll_src  = 0;   // 0=X, 1=Y, 2=Z
-        int8_t pitch_src = 1;
-        bool   roll_inv  = false;
-        bool   pitch_inv = false;
-    };
-
     MPU6050Driver()
         : _connected(false),
           _roll(0.0f), _pitch(0.0f),
-          _accelX(0.0f), _accelY(0.0f), _accelZ(0.0f),
-          _gyroX(0.0f), _gyroY(0.0f), _gyroZ(0.0f),
-          _gyroOffsetX(0.0f), _gyroOffsetY(0.0f), _gyroOffsetZ(0.0f),
+          _gyroOffsetX(0.0f), _gyroOffsetY(0.0f),
           _lastUpdateUs(0) {}
 
     /** Initialize sensor on Wire using Adafruit_MPU6050. */
@@ -46,38 +37,20 @@ public:
     /** Calibrate gyroscope zero offset while stationary. */
     void calibrateGyro(uint16_t samples = 200);
 
-    // Filtered orientation in degrees
+    // Filtered orientation in degrees.
+    // Roll is about the sensor X axis, pitch about Y. Any axis choice or
+    // inversion is applied downstream (see sensor_task.cpp).
     float getRoll()  const { return _roll; }
     float getPitch() const { return _pitch; }
-
-    // Accelerometer readings in m/s²
-    float getAccelX() const { return _accelX; }
-    float getAccelY() const { return _accelY; }
-    float getAccelZ() const { return _accelZ; }
-
-    // Gyro readings in °/s
-    float getGyroX() const { return _gyroX; }
-    float getGyroY() const { return _gyroY; }
-    float getGyroZ() const { return _gyroZ; }
-
-    void setAxisMap(AxisMap map) { _axisMap = map; }
-    AxisMap getAxisMap() const { return _axisMap; }
-
-    Adafruit_MPU6050& getRawMPU() { return _mpu; }
 
 private:
     Adafruit_MPU6050 _mpu;
     bool  _connected;
     float _roll, _pitch;
-    float _accelX, _accelY, _accelZ;  // m/s²
-    float _gyroX,  _gyroY,  _gyroZ;   // °/s
-    float _gyroOffsetX, _gyroOffsetY, _gyroOffsetZ;
+    float _gyroOffsetX, _gyroOffsetY;  // °/s
     unsigned long _lastUpdateUs;
-    AxisMap _axisMap;
 
     static constexpr float ALPHA = 0.98f;
-
-    float _remapped(float x, float y, float z, int8_t src, bool inv) const;
 };
 
 #endif // MPU6050_DRIVER_H

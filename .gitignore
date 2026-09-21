@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+logs/
+software/sli_desktop/dashboard/node_modules/
+software/firmware/tests/build/
+.pytest_cache/
+*.exe

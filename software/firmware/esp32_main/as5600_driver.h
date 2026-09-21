@@ -54,11 +54,9 @@ private:
     bool      _isFirstRead = true;
     uint16_t  _lastRawAngle = 0;
     uint8_t   _missCount = 0;
-    uint32_t  _glitchCount = 0;
 
-    // Register addresses
-    static const uint8_t REG_RAW_ANGLE = 0x0C;  // 12-bit raw angle (high + low)
-    static const uint8_t REG_ANGLE     = 0x0E;  // 12-bit filtered angle
+    // Register address: 12-bit filtered angle
+    static const uint8_t REG_ANGLE = 0x0E;
 
     /**
      * Read a 16-bit register via the configured I2C bus.

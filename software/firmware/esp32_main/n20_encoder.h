@@ -24,7 +24,7 @@
 class N20Encoder {
 public:
     N20Encoder()
-        : _count(0), _lastCount(0), _ropeLengthMM(0.0f) {}
+        : _count(0), _ropeLengthMM(0.0f) {}
 
     /**
      * Initialize encoder interrupt and motor driver pins.
@@ -34,9 +34,6 @@ public:
 
     /** Get current encoder tick count (atomic read). */
     long getCount();
-
-    /** Reset encoder count to zero. */
-    void resetCount();
 
     /**
      * Compute rope length in mm from encoder ticks.
@@ -61,7 +58,6 @@ public:
 
 private:
     volatile long _count;  // Accessed from ISR — must be volatile
-    long   _lastCount;
     float  _ropeLengthMM;
 };
 

@@ -46,28 +46,19 @@ void MPU6050Driver::update() {
     Wire.setClock(100000);  // Prevent Adafruit_I2CDevice from leaving bus at 400kHz
 
     // Accelerometer in m/s²
-    _accelX = a.acceleration.x;
-    _accelY = a.acceleration.y;
-    _accelZ = a.acceleration.z;
+    float ax = a.acceleration.x;
+    float ay = a.acceleration.y;
+    float az = a.acceleration.z;
 
     // Gyroscope converted from rad/s to deg/s with calibrated zero offset
-    _gyroX = (g.gyro.x * 180.0f / PI) - _gyroOffsetX;
-    _gyroY = (g.gyro.y * 180.0f / PI) - _gyroOffsetY;
-    _gyroZ = (g.gyro.z * 180.0f / PI) - _gyroOffsetZ;
+    float gx = (g.gyro.x * 180.0f / PI) - _gyroOffsetX;
+    float gy = (g.gyro.y * 180.0f / PI) - _gyroOffsetY;
 
     // Compute loop delta time
     unsigned long now = micros();
     float dt = (now - _lastUpdateUs) / 1000000.0f;
     _lastUpdateUs = now;
     if (dt <= 0.0f || dt > 0.1f) dt = 0.01f;
-
-    // Remap axes based on physical orientation
-    float ax = _remapped(_accelX, _accelY, _accelZ, _axisMap.roll_src,  _axisMap.roll_inv);
-    float ay = _remapped(_accelX, _accelY, _accelZ, _axisMap.pitch_src, _axisMap.pitch_inv);
-    float az = _accelZ;
-
-    float gx = _remapped(_gyroX, _gyroY, _gyroZ, _axisMap.roll_src,  _axisMap.roll_inv);
-    float gy = _remapped(_gyroX, _gyroY, _gyroZ, _axisMap.pitch_src, _axisMap.pitch_inv);
 
     // Accelerometer-based tilt angles (degrees)
     float accelRoll  = atan2(ay, az) * 180.0f / PI;
@@ -81,7 +72,7 @@ void MPU6050Driver::update() {
 void MPU6050Driver::calibrateGyro(uint16_t samples) {
     if (!_connected) return;
 
-    float sumX = 0.0f, sumY = 0.0f, sumZ = 0.0f;
+    float sumX = 0.0f, sumY = 0.0f;
     uint16_t valid = 0;
 
     for (uint16_t i = 0; i < samples; i++) {
@@ -89,7 +80,6 @@ void MPU6050Driver::calibrateGyro(uint16_t samples) {
         if (_mpu.getEvent(&a, &g, &temp)) {
             sumX += (g.gyro.x * 180.0f / PI);
             sumY += (g.gyro.y * 180.0f / PI);
-            sumZ += (g.gyro.z * 180.0f / PI);
             valid++;
         }
         delay(2);
@@ -98,27 +88,16 @@ void MPU6050Driver::calibrateGyro(uint16_t samples) {
     if (valid > 0) {
         _gyroOffsetX = sumX / valid;
         _gyroOffsetY = sumY / valid;
-        _gyroOffsetZ = sumZ / valid;
     }
 
     // Re-seed complementary filter angles directly to instantaneous accelerometer gravity vector
     sensors_event_t a, g, temp;
     if (_mpu.getEvent(&a, &g, &temp)) {
-        float ax = _remapped(a.acceleration.x, a.acceleration.y, a.acceleration.z, _axisMap.roll_src, _axisMap.roll_inv);
-        float ay = _remapped(a.acceleration.x, a.acceleration.y, a.acceleration.z, _axisMap.pitch_src, _axisMap.pitch_inv);
+        float ax = a.acceleration.x;
+        float ay = a.acceleration.y;
         float az = a.acceleration.z;
         _roll  = atan2(ay, az) * 180.0f / PI;
         _pitch = atan2(-ax, sqrtf(ay * ay + az * az)) * 180.0f / PI;
     }
     _lastUpdateUs = micros();
-}
-
-float MPU6050Driver::_remapped(float x, float y, float z, int8_t src, bool inv) const {
-    float val;
-    switch (src) {
-        case 0: val = x; break;
-        case 1: val = y; break;
-        default: val = z; break;
-    }
-    return inv ? -val : val;
 }

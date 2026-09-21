@@ -2,6 +2,7 @@
 //  Sensor Task — Implementation
 // ============================================================
 #include "sensor_task.h"
+#include "boom_check.h"
 
 // Local references to driver instances (set by init)
 static AS5600Driver*  _swingEnc  = nullptr;
@@ -45,11 +46,44 @@ static bool    _tiltInvert      = false;
 static float   _teleScale       = TELE_MM_PER_REVOLUTION;
 static bool    _teleInvert      = TELE_DEFAULT_INVERT;
 
+// IMU vs boom-encoder cross-check (boom AS5600 is on the pivot shaft, 1:1)
+static BoomAngleCheck   _boomCheck;
+static volatile uint8_t _boomCheckState = 0;     // see sensorTask_getBoomCheck()
+static volatile float   _boomCheckErr   = 0.0f;
+
 static volatile bool    _reqImuCalibration = false;
 static volatile uint8_t _reqBoomSrc = 0;
 static volatile uint8_t _reqTiltSrc = 1;
 static volatile bool    _reqBoomInv = false;
 static volatile bool    _reqTiltInv = false;
+
+// The cross-check reference + learned direction live in their own NVS namespace
+// (a local Preferences object, so this is safe to call from any task).
+static void saveBoomCheck() {
+    Preferences p;
+    if (p.begin("sli_bchk", false)) {
+        p.putFloat("ref", _boomCheck.refDeg());
+        p.putUChar("sign", (uint8_t)(_boomCheck.sign() + 1));   // -1/0/+1 stored as 0/1/2
+        p.end();
+    }
+}
+
+static void loadBoomCheck() {
+    float ref = 0.0f;
+    int8_t sign = 0;
+    Preferences p;
+    if (p.begin("sli_bchk", true)) {
+        ref  = p.getFloat("ref", 0.0f);
+        sign = (int8_t)p.getUChar("sign", 1) - 1;
+        p.end();
+    }
+    _boomCheck.configure(ref, sign);
+}
+
+uint8_t sensorTask_getBoomCheck(float* errDeg) {
+    if (errDeg) *errDeg = _boomCheckErr;
+    return _boomCheckState;
+}
 
 void sensorTask_saveCalibration() {
     _prefs.begin("sli_imu", false);
@@ -75,6 +109,7 @@ void sensorTask_loadCalibration() {
     _teleScale       = _prefs.getFloat("tele_scale", TELE_MM_PER_REVOLUTION);
     _teleInvert      = _prefs.getBool("tele_inv",    TELE_DEFAULT_INVERT);
     _prefs.end();
+    loadBoomCheck();
 }
 
 void sensorTask_resetTelescope(float scale, int8_t invert) {
@@ -97,6 +132,9 @@ void sensorTask_resetTelescope(float scale, int8_t invert) {
     sensorTask_saveCalibration();
 }
 
+float sensorTask_getTeleScale()  { return _teleScale; }
+bool  sensorTask_getTeleInvert() { return _teleInvert; }
+
 void sensorTask_zeroIMU() {
     if (_imu && _imu->isConnected()) {
         float r = _imu->getRoll();
@@ -105,6 +143,12 @@ void sensorTask_zeroIMU() {
         _boomAngleOffset = (_boomSource == 1) ? p : r;
         _tiltAngleOffset = (_tiltSource == 1) ? p : r;
         sensorTask_saveCalibration();
+
+        // The pose the IMU was just zeroed at is also the encoder's reference pose
+        if (_boomEnc && _boomEnc->isConnected()) {
+            _boomCheck.setReference(_boomEnc->readAngle());
+            saveBoomCheck();
+        }
     }
 }
 
@@ -170,9 +214,26 @@ void sensorTask(void* pvParameters) {
         float rawBoom = (boomBase - _boomAngleOffset) * (_boomInvert ? -1.0f : 1.0f);
         float rawTilt = (tiltBase - _tiltAngleOffset) * (_tiltInvert ? -1.0f : 1.0f);
 
-        float boom = (_imu && _imu->isConnected())
-            ? rawBoom
-            : (_boomEnc ? _boomEnc->readAngle() : 0.0f);
+        // The boom angle is only trustworthy from the calibrated IMU. Without it the
+        // raw boom encoder angle is shown, but it is not referenced to horizontal, so
+        // it is flagged as a fault instead of being fed to the load chart unnoticed.
+        const bool  boomOK = (_imu && _imu->isConnected());
+        const bool  encOK  = (_boomEnc && _boomEnc->isConnected());
+        const float encDeg = encOK ? _boomEnc->readAngle() : 0.0f;
+        float boom = boomOK ? rawBoom : encDeg;
+
+        // Cross-check the IMU against the encoder that turns with the boom
+        bool boomMismatch = false;
+        if (boomOK && encOK) {
+            BoomCheckResult r = _boomCheck.update(millis(), encDeg, rawBoom);
+            boomMismatch    = (r == BOOM_CHECK_MISMATCH);
+            _boomCheckState = (uint8_t)(r == BOOM_CHECK_LEARNING ? 1 : (r == BOOM_CHECK_OK ? 2 : 3));
+            _boomCheckErr   = _boomCheck.errorDeg();
+            if (_boomCheck.takeLearned()) saveBoomCheck();   // direction just learned
+        } else {
+            _boomCheckState = 0;   // nothing to compare
+            _boomCheckErr   = 0.0f;
+        }
 
         // HX711 load cell (non-blocking — returns cached if not ready)
         float weight = _loadCell ? _loadCell->getWeight() : 0.0f;
@@ -193,35 +254,25 @@ void sensorTask(void* pvParameters) {
         if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             sensorData.swingAngle   = swing;
             sensorData.boomAngle    = boom;
-            sensorData.teleAngle    = tele;
             sensorData.extensionMM  = extensionMM;
             sensorData.ropeLengthMM = ropeLen;
 
-            sensorData.loadCellRaw  = (float)(_loadCell ? _loadCell->getLastRaw() : 0);
-            sensorData.actualLoadKg = weight;  // Phase 3: will add angle compensation
+            // Uncorrected kg straight from the HX711. SafetyTask derives the
+            // angle-compensated load, limit, percent and alarm level from it.
+            sensorData.loadCellRaw  = weight;
+            sensorData.loadSensorOK = _loadCell ? _loadCell->isFresh(LOAD_SENSOR_STALE_MS) : false;
 
-            sensorData.imuRoll  = boom;     // Calibrated Boom elevation angle
-            sensorData.imuPitch = rawTilt;  // Calibrated lateral chassis tilt angle
+            sensorData.boomLean = rawTilt;  // Sideways lean of the boom (IMU axis other than the boom angle)
+            sensorData.boomSensorOK = boomOK;
+            sensorData.boomMismatch = boomMismatch;
+            sensorData.extSensorOK  = _teleEnc ? _teleEnc->isConnected() : false;
 
             sensorData.fsr[0] = fsrVals[0];
             sensorData.fsr[1] = fsrVals[1];
             sensorData.fsr[2] = fsrVals[2];
             sensorData.fsr[3] = fsrVals[3];
 
-            // Phase 3: these will be computed by SafetyTask
-            sensorData.safeLoadLimit = 5.0f;   // Default 5kg crane limit
-
-            // Load sanity check: on a 5kg crane, anything >10kg is uncalibrated raw data or overload error
-            bool loadValid = (weight >= -0.5f && weight <= MAX_VALID_LOAD_KG);
-            if (loadValid) {
-                sensorData.loadPercent = (sensorData.safeLoadLimit > 0)
-                    ? (sensorData.actualLoadKg / sensorData.safeLoadLimit) * 100.0f
-                    : 0.0f;
-                sensorData.alarmLevel = (sensorData.loadPercent >= 100.0f) ? 2 : ((sensorData.loadPercent >= 85.0f) ? 1 : 0);
-            } else {
-                sensorData.loadPercent = 999.0f;  // Sentinel error value
-                sensorData.alarmLevel  = 2;       // Warning
-            }
+            // Load %, safe limit and alarm level are computed by SafetyTask
 
             // System health check
             sensorData.sensorsOK = (

@@ -14,6 +14,8 @@
 #include "mpu6050_driver.h"
 #include "as5600_driver.h"
 #include "telemetry_fmt.h"
+#include "load_chart.h"
+#include "load_comp.h"
 
 /**
  * Initialize the command task with references to subsystems.
@@ -26,7 +28,9 @@ void commandTask_init(
     MPU6050Driver* imu,
     AS5600Driver* teleEnc,
     AS5600Driver* swingEnc,
-    AS5600Driver* boomEnc
+    AS5600Driver* boomEnc,
+    LoadChart* loadChart,
+    LoadCompensation* loadComp
 );
 
 /**

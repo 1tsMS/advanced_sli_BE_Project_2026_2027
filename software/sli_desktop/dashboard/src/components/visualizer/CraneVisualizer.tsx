@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import type { TelemetryFrame } from "../../types";
+import { STATUS, hasStatus } from "../../status";
 
 interface CraneVisualizerProps {
   frame: TelemetryFrame | null;
@@ -466,12 +467,12 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Load indicator at hook
-    const isLoadError = actualLoad > 10.0 || actualLoad < -0.5 || (frame?.loadPercent ?? 0) >= 900;
+    const isLoadError = hasStatus(frame, STATUS.LOAD_FAULT);
     if (isLoadError) {
       ctx.fillStyle = "#FFB300";
       ctx.font = "bold 10px JetBrains Mono, monospace";
       ctx.textAlign = "left";
-      ctx.fillText("LOAD ERR (>10kg)", hookX + 10, hookY + 12);
+      ctx.fillText("LOAD FAULT", hookX + 10, hookY + 12);
     } else if (actualLoad > 0.05) {
       ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
       ctx.font = "bold 10px JetBrains Mono, monospace";
@@ -524,12 +525,12 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
     // --- Top Overlay Info Badges ---
     ctx.save();
-    const loadPct = isLoadError ? 0 : (safeLimit > 0 ? (actualLoad / safeLimit) * 100 : 0);
+    const loadPct = isLoadError ? 0 : (frame?.loadPercent ?? 0);
     ctx.font = "600 11px Inter, sans-serif";
     ctx.fillStyle = isLoadError ? "#FFB300" : statusColor;
     ctx.textAlign = "left";
     ctx.fillText(
-      isLoadError ? "● LOAD SENSOR ERR (>10kg)" : `● SWL: ${safeLimit.toFixed(1)}kg (${loadPct.toFixed(0)}%)`,
+      isLoadError ? "● LOAD SENSOR FAULT" : `● SWL: ${safeLimit.toFixed(1)}kg (${loadPct.toFixed(0)}%)`,
       16, 24
     );
 

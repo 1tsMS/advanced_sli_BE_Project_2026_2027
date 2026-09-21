@@ -4,7 +4,7 @@
 //
 //  This file:
 //    1. Initializes all I2C buses and sensor drivers
-//    2. Creates the shared mutex and command queue
+//    2. Creates the shared sensor-data mutex
 //    3. Spawns FreeRTOS tasks pinned to specific CPU cores
 //
 //  Core 1 (real-time critical):
@@ -26,10 +26,13 @@
 #include "sensor_task.h"
 #include "telemetry_task.h"
 #include "command_task.h"
+#include "load_chart.h"
+#include "load_comp.h"
+#include "safety_task.h"
 
 // ======================== GLOBAL RTOS OBJECTS ========================
-SemaphoreHandle_t sensorMutex      = NULL;
-QueueHandle_t     motorCommandQueue = NULL;
+SemaphoreHandle_t sensorMutex = NULL;
+volatile bool     g_estopLatched = false;
 
 // ======================== SHARED SENSOR DATA ========================
 SensorData sensorData;
@@ -48,6 +51,10 @@ MPU6050Driver imu;                                             // Wire Bus 0 (GP
 HX711Driver loadCell(HX711_DT_PIN, HX711_SCK_PIN);
 FSRReader   fsrReader;
 N20Encoder  winchEncoder;
+
+// ======================== SAFETY DATA ========================
+LoadChart        loadChart;   // rated-capacity table, persisted in NVS
+LoadCompensation loadComp;    // boom-angle correction for the load cell, persisted in NVS
 
 // ======================== COMMUNICATION ========================
 MegaBridge megaBridge;
@@ -119,14 +126,13 @@ void setup() {
 
     // --- Initialize shared sensor data to safe defaults ---
     memset(&sensorData, 0, sizeof(SensorData));
-    sensorData.safeLoadLimit = 5.0f;  // Default 5kg limit
+    sensorData.safeLoadLimit = SAFE_LOAD_DEFAULT_KG;  // until SafetyTask's first pass
     sensorData.sensorsOK = true;
 
     // --- Create RTOS synchronization primitives ---
     sensorMutex = xSemaphoreCreateMutex();
-    motorCommandQueue = xQueueCreate(10, sizeof(MotorCommand));
 
-    if (!sensorMutex || !motorCommandQueue) {
+    if (!sensorMutex) {
         Serial.println("FATAL: Failed to create RTOS primitives!");
         while (1) delay(1000);  // Halt
     }
@@ -138,9 +144,22 @@ void setup() {
     );
     sensorTask_loadCalibration();  // Restore zero offsets and axis config from flash
 
+    loadChart.loadFromFlash();     // Restore saved load chart (if any)
+    Serial.print("Load chart:     ");
+    Serial.print(loadChart.count());
+    Serial.println(" entries in flash");
+
+    loadComp.loadFromFlash();      // Restore saved load-cell angle correction (if any)
+    Serial.print("Load cell gain: ");
+    Serial.print(loadComp.count());
+    Serial.println(" angle points in flash");
+
+    safetyTask_init(&loadChart, &loadComp);
+
     commandTask_init(
         &megaBridge, &winchEncoder, &loadCell,
-        &imu, &teleEncoder, &swingEncoder, &boomEncoder
+        &imu, &teleEncoder, &swingEncoder, &boomEncoder,
+        &loadChart, &loadComp
     );
 
     // --- Create FreeRTOS Tasks ---
@@ -152,6 +171,17 @@ void setup() {
         NULL,                    // Parameter
         SENSOR_TASK_PRIORITY,    // Priority (5 = high)
         NULL,                    // Task handle
+        1                        // Pin to Core 1
+    );
+
+    // Core 1: Safety — load correction, limit lookup, alarm level (highest priority)
+    xTaskCreatePinnedToCore(
+        safetyTask,
+        "SafetyTask",
+        SAFETY_TASK_STACK,
+        NULL,
+        SAFETY_TASK_PRIORITY,    // Priority 6
+        NULL,
         1                        // Pin to Core 1
     );
 

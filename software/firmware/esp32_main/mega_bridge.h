@@ -36,22 +36,8 @@ public:
      */
     void sendMotorCommand(const MotorCommand& cmd);
 
-    /**
-     * Send a raw G-code string to the Mega.
-     */
-    void sendRaw(const char* gcode);
-
-    /**
-     * Check if Mega has sent any response/acknowledgment.
-     * Returns true if data is available on UART2.
-     */
-    bool hasResponse();
-
-    /**
-     * Read a line from Mega (if available).
-     * @return number of chars read, 0 if nothing
-     */
-    int readResponse(char* buffer, size_t bufLen);
+    /** Tell the Mega to clear its E-stop latch and re-enable the stepper drivers. */
+    void sendReset();
 
 private:
     HardwareSerial* _megaSerial;

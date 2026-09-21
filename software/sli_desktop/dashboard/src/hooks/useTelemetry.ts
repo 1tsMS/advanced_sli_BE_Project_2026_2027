@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { TelemetryFrame, DebugReport } from "../types";
+import type { TelemetryFrame, DebugReport, HistoryPoint } from "../types";
 
 const WS_URL = "ws://localhost:8000/ws/telemetry";
 const STATUS_URL = "http://localhost:8000/api/status";
 const RECONNECT_DELAY = 3000;
+/** How much telemetry history the rolling charts keep, in seconds. */
+export const HISTORY_SECONDS = 30;
 
 export type WsStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -13,6 +15,8 @@ interface UseTelemetryReturn {
   lastAck: string | null;
   wsStatus: WsStatus;
   espConnected: boolean;
+  /** Last HISTORY_SECONDS of samples, oldest first. */
+  history: HistoryPoint[];
 }
 
 /**
@@ -31,6 +35,7 @@ export function useTelemetry(): UseTelemetryReturn {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTelemetryTime = useRef<number>(0);
   const mountedRef = useRef(true);
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
 
   // Poll backend status for ESP32 serial link
   const checkStatus = useCallback(async () => {
@@ -64,7 +69,26 @@ export function useTelemetry(): UseTelemetryReturn {
       try {
         const msg = JSON.parse(event.data as string);
         if (msg.type === "telemetry") {
-          setFrame(msg as TelemetryFrame);
+          const f = msg as TelemetryFrame;
+          const point: HistoryPoint = {
+            t: Date.now() / 1000,
+            boomAngle: f.boomAngle,
+            extensionMM: f.extensionMM,
+            actualLoad: f.actualLoad,
+            safeLoadLimit: f.safeLoadLimit,
+            loadPercent: f.loadPercent,
+          };
+          setHistory(prev => {
+            // Drop samples older than the window (they are always at the front)
+            const cutoff = point.t - HISTORY_SECONDS;
+            let start = 0;
+            while (start < prev.length && prev[start].t < cutoff) start++;
+            const next = prev.slice(start);
+            next.push(point);
+            return next;
+          });
+
+          setFrame(f);
           lastTelemetryTime.current = Date.now();
           setEspConnected(true);
         } else if (msg.type === "debug") {
@@ -108,5 +132,5 @@ export function useTelemetry(): UseTelemetryReturn {
     };
   }, [connect, checkStatus]);
 
-  return { frame, debugReport, lastAck, wsStatus, espConnected };
+  return { frame, debugReport, lastAck, wsStatus, espConnected, history };
 }

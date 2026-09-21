@@ -1,3 +1,22 @@
+> **Status note (September 2026): this is the ORIGINAL design plan.** The project follows its
+> three-layer idea, but the implementation differs in the places below. What is actually built is
+> described in [software/software.md](../software/software.md); wiring is in
+> [hardware/connections.md](../hardware/connections.md). The RTOS explanation in section 1 is still accurate.
+>
+> | Plan says | What was built |
+> |---|---|
+> | Frontend is Electron + React + Framer Motion | A plain Vite + React web app run in a browser (no Electron, no Framer Motion). Charts are simple SVG, so Recharts is not used either |
+> | WebSocket on port 8765 | WebSocket and REST are both on port 8000 (`/ws/telemetry`, `/api/...`), bound to localhost by default |
+> | `pyserial-asyncio` | `pyserial` read in a worker thread |
+> | HX711 on GPIO 4/27, UART2 on GPIO 16/17 | HX711 on GPIO 17/16, UART2 on GPIO 23/27, MPU6050 on I2C bus 0 |
+> | Tabs: Dashboard, Debug, Calibration, Data Logger, Controller, Load Chart, Settings | Dashboard (with the Xbox controller), Debug & Calibrate, Data Logger, Load Chart, Settings |
+> | Load compensation `W = F / cos(θ)` (section 4) | The load cell is on top of the boom with the cable over it, so the correction is **learned**: record known weights at several boom angles (`CAL3 W<kg>`) and the ESP32 interpolates. Section 4's formula is not used |
+> | `SafetyTask` with load chart, alarm levels WARN 80 % / CRITICAL 100 % | Implemented as planned, plus status flags, sensor-fault alarms and an IMU-vs-encoder boom cross-check. **Alarm only**, it never blocks motion |
+> | `$T` fields 11-12 are `imuRoll`, `imuPitch` | Fields 11-12 are `boomLean` and `statusFlags`; `$T` measured load is the uncorrected load in kg |
+> | Commands `T0`, `M1`-`M4`, `M0`, `CAL0-2`, `DBG`, `CFG`, `LC` | Also `RST` (clears the latched E-stop) and `CAL3`, `LC GET`. `M` commands are a dead-man: they must be repeated (every 100 ms) or the axis stops after 400 ms |
+> | Firmware split into `tasks/`, `drivers/`, `protocol/`, `safety/` folders | One flat sketch folder (`esp32_main/`), as the Arduino IDE requires |
+> | Phase 4: PID anti-sway | Not started |
+
 # Advanced SLI — Software System Design Plan (v2)
 
 ## Overview

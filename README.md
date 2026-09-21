@@ -84,7 +84,7 @@ Limitations of the current situation:
 
 **How it works:** Boom angle, extension length, and load/pressure are continuously measured and combined (via a load-chart lookup) to compute real-time load percentage and trigger safety alarms. Inertial (IMU) data is used to detect motion events, assist with anti-sway damping, and support operator analytics. Data is transmitted to a desktop dashboard for live monitoring and logging.
 
-**Major components:** Multi-axis scale-model crane (swing, telescopic extension, boom lift, cable reeling), magnetic encoders, IMU, load cell, microcontroller-based control system, and a PyQt6 desktop dashboard.
+**Major components:** Multi-axis scale-model crane (swing, telescopic extension, boom lift, cable reeling), magnetic encoders, IMU, load cell, microcontroller-based control system, and a web-based dashboard on the PC (React frontend, Python FastAPI backend).
 
 **Expected benefits:** Real-time load awareness, improved operator safety, a low-cost architecture suited to smaller cranes, and a foundation for future predictive safety features.
 
@@ -94,13 +94,13 @@ Limitations of the current situation:
 
 ## System Architecture
 
+```text
+Dashboard (React, browser) --REST + WebSocket :8000--> Backend (FastAPI) --USB 115200--> ESP32 --UART 9600--> Mega + RAMPS
+                                                                                          |                       |
+                                                              sensors: 3 x AS5600, MPU6050, HX711, 4 x FSR, N20   3 x NEMA17
+```
 
-
-
-![System Architecture](images/system_architecture.png)
-
-
-
+The ESP32 makes every safety decision; the dashboard only displays and sends commands. The control flow of the firmware is shown in the flowchart below.
 
 ---
 
@@ -108,16 +108,21 @@ Limitations of the current situation:
 
 | Sr. No. | Component | Specification | Quantity | Purpose |
 | ------- | --------- | ------------- | -------- | ------- |
-| 1       | NEMA17 Stepper Motor | 17HS8401 | 3 | Swing, boom lift, telescopic extension actuation |
+| 1       | NEMA17 Stepper Motor | 17HS8401 | 3 | Swing, boom lift, telescopic extension |
 | 2       | N20 DC Gear Motor | 150 RPM, encoder-integrated | 1 | Cable reeling / winch drive |
-| 3       | Arduino Mega 2560 | — | 1 | Main controller |
-| 4       | RAMPS 1.4 | — | 1 | Motor driver / sensor breakout shield |
-| 5       | A4988 Stepper Driver | — | 4 | Stepper motor driving |
-| 6       | AS5600 Magnetic Encoder | — | 2 | Swing and boom lift angle feedback |
-| 7       | MPU6050 IMU | 6-axis | 1 | Inertial motion sensing |
-| 8       | HX711 + Load Cell | 5 kg | 1 | Load sensing |
-| 9       | Limit Switches | Mechanical | As required | Axis end-stop safety |
-| 10      | 12V Power Supply | 12V, 10A | 1 | System power |
+| 3       | ESP32 (30-pin) | — | 1 | Main controller: sensors, safety logic, PC link |
+| 4       | Arduino Mega 2560 | — | 1 | Stepper motor executor |
+| 5       | RAMPS 1.4 | — | 1 | Stepper driver shield |
+| 6       | A4988 Stepper Driver | — | 4 (3 used) | Stepper motor driving |
+| 7       | DRV8833 | — | 1 | N20 winch motor driver |
+| 8       | AS5600 Magnetic Encoder | — | 3 | Swing, boom and telescope position feedback |
+| 9       | MPU6050 IMU | 6-axis | 1 | Boom angle and boom lean |
+| 10      | HX711 + Load Cell | 5 kg | 1 | Load sensing |
+| 11      | FSR | RP-C18.3-ST | 4 | Outrigger load |
+| 12      | Limit Switches | Mechanical | — | Axis end-stop safety (**not fitted yet**) |
+| 13      | 12V Power Supply | 12V, 10A | 1 | System power |
+
+Wiring is in [hardware/connections.md](hardware/connections.md); more detail in [hardware/hardware.md](hardware/hardware.md).
 
 ---
 
@@ -125,28 +130,29 @@ Limitations of the current situation:
 
 | Sr. No. | Software / Tool | Version | Purpose |
 | ------- | --------------- | ------- | ------- |
-| 1       | Arduino IDE     | —       | Firmware development |
-| 2       | Fusion 360      | —       | Mechanical CAD design |
-| 3       | Python          | —       | Data processing, dashboard, model training |
-| 4       | PyQt6           | —       | Desktop dashboard application |
+| 1       | Arduino IDE + ESP32 board package | — | Firmware for the ESP32 and the Arduino Mega |
+| 2       | Arduino libraries: HX711 (bogde), Adafruit MPU6050, Adafruit Unified Sensor | — | Sensor drivers |
+| 3       | Fusion 360 | — | Mechanical CAD design |
+| 4       | Python 3 with FastAPI, uvicorn, pyserial, pydantic | 3.10+ | Backend: serial link, REST/WebSocket API, CSV logging |
+| 5       | Node.js + npm (React, Vite, TypeScript, Lucide) | React 19, Vite 8 | Web dashboard |
+| 6       | pytest, httpx | — | Backend tests |
+| 7       | A C++ compiler (g++, clang++ or `pip install ziglang`) | — | Firmware unit tests on the PC |
 
 ---
 
 ## Technologies Used
 
-* Embedded C++ (Arduino)
-* Python (data processing, dashboard, model training)
-* Arduino Mega, RAMPS 1.4, A4988 stepper drivers
-* Sensor fusion (Madgwick / Kalman filtering for IMU data)
-* Machine Learning (LSTM — planned for future tipping prediction phase)
-* PyQt6 (desktop dashboard)
-* CAD Design (Fusion 360)
+* Embedded C++ (Arduino) with FreeRTOS on the ESP32
+* Python (FastAPI backend, pyserial, CSV logging)
+* TypeScript, React and Vite (web dashboard)
+* Arduino Mega, RAMPS 1.4, A4988 stepper drivers; DRV8833 for the winch
+* Sensor fusion: complementary filter for the IMU; IMU-versus-encoder cross-check for the boom angle
+* Machine Learning (LSTM: planned for the future tipping-prediction / operator-scoring phase)
+* CAD Design (Fusion 360), 3D printing and laser cutting
 
 ---
 
 ## Methodology
-
-Explain the step-by-step approach.
 
 1. Literature survey
 2. Problem identification
@@ -189,10 +195,10 @@ Students must update this section every week.
 | Week 7 | Aug 2026     | 3D printing of mechanical parts and assembly               |                            |                     |                    |
 | Week 8 | Aug 2026     | Prototype PCB and electronic configuration               |                            |                     |                    |
 | Week 8 | Aug 2026     | Prototype testing done             | issues in model noted and updated laser cut files                           |                     |                    |
-| Week 9 | Sep 2026     |               | Sensor integration                           |                     |                    |
-| Week 10 | Sep 2026     |                | Firmware development                           |                     |                    |
-| Week 11 | Sep 2026     |                | Calibration & implement basic load-chart safety limits                           |                     |                    |
-| Week 12 | Sep 2026     |                | Build PyQt6 dashboard                           |                     |                    |
+| Week 9 | Sep 2026     | Sensor integration: stand-alone test sketches for the 3 AS5600, MPU6050, HX711 load cell, 4 FSR, N20 motor + encoder and the ESP32-to-Mega serial link | Sensor integration                           |                     | [c3c4124](https://github.com/1tsMS/advanced-sli-crane-system-personal-repo/commit/c3c4124), [122a4d4](https://github.com/1tsMS/advanced-sli-crane-system-personal-repo/commit/122a4d4) |
+| Week 10 | Sep 2026     | Firmware development: ESP32 FreeRTOS firmware (sensor, telemetry and command tasks), Mega stepper executor, FastAPI backend and React dashboard (data pipeline, motor controls, debug and calibration tab) | Firmware development                           | Telescope encoder jumpy; N20 winch runs one way only | [584ee0f](https://github.com/1tsMS/advanced-sli-crane-system-personal-repo/commit/584ee0f), [2364f7b](https://github.com/1tsMS/advanced-sli-crane-system-personal-repo/commit/2364f7b) |
+| Week 11 | Sep 2026     | Safety features written and tested on a PC: latched E-stop, dead-man motion stop, load chart stored in flash, SafetyTask (load-chart limit, alarms, sensor-fault and IMU/encoder checks), load-cell angle correction, Data Logger and Load Chart tabs, automated tests. Not yet run on the crane | Calibration & implement basic load-chart safety limits                           | Hardware calibration and testing still to do | (not yet committed) |
+| Week 12 | Sep 2026     |                | Build dashboard (React + FastAPI)               |                     |                    |
 | Week 13 | Oct 2026     |                | 	Implement PID-based anti-sway control; begin tipping-prediction groundwork                           |                     |                    |
 | Week 14 | Oct 2026     |                | 	Full system testing, bug fixes, results compilation, documentation                           |                     |                    |
 | Week 15 | Oct 2026     |                | Research paper writing                          |                     |                    |
@@ -204,187 +210,197 @@ Upload and link all design files here.
 
 | File Type       | File Name / Link | Description |
 | --------------- | ---------------- | ----------- |
-| CAD Model       |                  |             |
-| Circuit Diagram |                  |             |
-| PCB Design      |                  |             |
-| Flowchart       |                  |             |
-| Simulation File |                  |             |
+| CAD Model       | [hardware/cad_model/V1](hardware/cad_model/V1) | Fusion 360 export of the scale-model crane: STL parts, 3MF assembly, DXF files for laser cutting |
+| Circuit Diagram | Not added yet (wiring tables: [hardware/connections.md](hardware/connections.md)) | Pin-by-pin connections for the ESP32, Mega + RAMPS and all sensors |
+| PCB Design      | Not added yet (prototype protoboard) | |
+| Flowchart       | [images/system_architecture.png](images/system_architecture.png) | Control flowchart of the SLI logic |
+| Simulation File | None (PC unit tests: [software/firmware/tests](software/firmware/tests)) | Firmware logic tested on the PC |
 
 ---
 
 ## Circuit Diagram
 
-Add circuit diagram image here.
+A drawn circuit diagram has not been added yet. The complete pin-by-pin wiring (three I2C buses, HX711, FSRs,
+winch driver, ESP32-to-Mega link, RAMPS stepper slots) is in [hardware/connections.md](hardware/connections.md).
 
-````markdown
+```markdown
 ![Circuit Diagram](images/circuit_diagram.png)
-````
+```
 
 ---
 
 ## Flowchart / Algorithm
 
-Add flowchart image here.
+![Flowchart](images/system_architecture.png)
 
-````markdown
-![Flowchart](images/flowchart.png)
-````
+### Algorithm (as implemented in the ESP32 firmware)
 
-### Algorithm
+1. **Start-up:** initialise the three I2C buses and all sensors, calibrate the gyro, and restore the saved settings from flash (IMU zero, telescope scale, load chart, load-cell angle corrections).
+2. **Every 10 ms (SensorTask):** read the encoders, IMU, load cell, outrigger FSRs and winch encoder into one shared data structure.
+3. **Every 20 ms (SafetyTask, highest priority):**
+   1. Correct the load cell reading for the boom angle (learned per-angle table).
+   2. Look up the safe load for the current boom angle and extension in the load chart (0 kg outside the chart; a 5 kg default if no chart is saved).
+   3. Compute load % and the alarm level: 80 % warning, 100 % critical, with hysteresis.
+   4. Check sensor health and that the IMU and boom encoder agree; a fault raises a critical alarm and a status flag.
+   5. A latched E-stop overrides everything.
+4. **Every 20 ms (TelemetryTask):** send the telemetry packet to the PC.
+5. **On demand (CommandTask):** parse commands from the PC. Motion commands must be repeated while a control is held, otherwise the axis stops after 400 ms; `T0` latches an emergency stop until `RST`.
+6. **PC:** the backend logs every packet to a CSV file and forwards it to the dashboard, which shows the load, alarms and status.
 
-1. Start
-2. Initialize the system
-3. Read input from sensors/user
-4. Process the data
-5. Generate output/control action
-6. Display/store/transmit result
-7. Stop
+The safety logic only raises alarms; it never blocks motion.
 
 ---
 
 ## Implementation Details
 
-Explain the actual implementation of the project.
-
 ### Hardware Implementation
 
-Write details about connections, components, power supply, sensors, actuators, PCB, enclosure, etc.
+A 3D-printed scale-model truck-mounted crane with four axes: swing, boom lift and telescopic extension (NEMA17 steppers driven through a Mega + RAMPS 1.4) and a cable winch (N20 gear motor through a DRV8833, driven directly by the ESP32). Position feedback comes from three AS5600 magnetic encoders on separate I2C buses; an MPU6050 on the boom gives the boom angle and lean; a 5 kg load cell (HX711) on top of the boom, with the cable running over it, measures the load; four FSRs under the outriggers measure their load. The 12 V supply powers the motors; the ESP32 runs from USB. See [hardware/hardware.md](hardware/hardware.md) and [hardware/connections.md](hardware/connections.md).
 
 ### Software Implementation
 
-Write details about code structure, libraries used, algorithms, communication protocols, database, app, cloud, etc.
+- **ESP32 firmware (C++, FreeRTOS):** sensor, safety, telemetry and command tasks; custom drivers for the three AS5600s (including a bit-banged I2C bus), a non-blocking HX711 driver; settings stored in flash; a text G-code protocol over USB serial.
+- **Mega firmware:** steps the three stepper axes; stops on E-stop and when commands stop arriving.
+- **Backend (Python, FastAPI):** validates commands, parses the ESP32's packets, serves REST and WebSocket, logs every session to CSV.
+- **Dashboard (React, TypeScript, Vite):** live telemetry, gauges, crane view, hold-to-move controls and Xbox controller, calibration tools, load chart editor, data logger.
+
+Details, the command and packet formats and the API are in [software/software.md](software/software.md).
 
 ---
 
 ## Code Structure
 
-````text
-BE-Capstone-Project/
-│
+```text
+advanced-sli-crane-system-personal-repo/
 ├── README.md
 ├── docs/
 │   ├── literature_survey.md
-│   ├── project_report.pdf
-│   └── presentation.pptx
-│
+│   ├── software_design_plan.md      original design plan (see its status note)
+│   ├── project_status_report.md
+│   └── project_checklist.md         live to-do list
 ├── hardware/
-│   ├── circuit_diagram.png
-│   ├── pcb_design/
-│   └── cad_model/
-│
+│   ├── connections.md              wiring tables
+│   ├── hardware.md
+│   └── cad_model/V1/               STL / 3MF / DXF files
 ├── software/
-│   ├── src/
-│   ├── include/
-│   └── tests/
-│
+│   ├── software.md
+│   ├── firmware/
+│   │   ├── esp32_main/             ESP32 firmware
+│   │   ├── mega_executor/          Arduino Mega firmware
+│   │   └── tests/                  PC unit tests for the firmware logic
+│   ├── sli_desktop/
+│   │   ├── backend/                FastAPI backend (+ tests/)
+│   │   └── dashboard/              React dashboard
+│   └── test_codes/                 stand-alone hardware test sketches
 ├── images/
-│   ├── system_architecture.png
-│   ├── prototype_photo.jpg
-│   └── results.png
-│
-└── references/
-    └── papers/
-````
+└── reference/
+```
 
 ---
 
 ## How to Run the Project
 
+The full guide, including the calibration order, is in [software/software.md](software/software.md). In short:
+
 ### Step 1: Clone the Repository
 
-````bash
-git clone https://github.com/username/project-name.git
-````
+```bash
+git clone https://github.com/1tsMS/advanced-sli-crane-system-personal-repo.git
+```
 
-### Step 2: Install Dependencies
+### Step 2: Flash the firmware
 
-````bash
+In the Arduino IDE (with the ESP32 board package and the HX711, Adafruit MPU6050 and Adafruit Unified Sensor libraries), upload `software/firmware/esp32_main/esp32_main.ino` to the ESP32 and `software/firmware/mega_executor/mega_executor.ino` to the Mega 2560.
+
+### Step 3: Start the backend
+
+```bash
+cd software/sli_desktop/backend
 pip install -r requirements.txt
-````
-
-or mention specific software/library installation steps.
-
-### Step 3: Upload / Run the Code
-
-````bash
 python main.py
-````
+```
 
-or
+### Step 4: Start the dashboard
 
-````bash
-arduino-cli upload -p COMx --fqbn board_name
-````
+```bash
+cd software/sli_desktop/dashboard
+npm install
+npm run dev
+```
 
-### Step 4: Observe the Output
+Open <http://localhost:5173>, go to **Settings**, pick the ESP32's COM port and press **Connect**.
 
-Mention the expected output of the project.
+### Step 5: Observe the output
+
+Live boom angle, extension, load, safe limit, load % and alarm state appear on the dashboard, and every session is saved as a CSV in `software/sli_desktop/backend/logs/`.
 
 ---
 
 ## Testing and Results
 
+Status as of 21 September 2026. Tests on the crane itself are still to be done; the results below are marked accordingly.
+
 | Test No. | Test Description | Expected Result | Actual Result | Status      |
 | -------- | ---------------- | --------------- | ------------- | ----------- |
-| 1        |                  |                 |               | Pass / Fail |
-| 2        |                  |                 |               | Pass / Fail |
-| 3        |                  |                 |               | Pass / Fail |
+| 1        | Firmware logic on a PC: G-code parser, load chart, angle correction, alarm levels, sensor-fault flags, IMU/encoder cross-check, packet format (`software/firmware/tests`) | All checks pass | 221 checks passed; all firmware sources compile | Pass (PC only) |
+| 2        | Backend on a PC: packet parser, command validation, load chart upload against a simulated ESP32, CSV logger, REST API (`backend/tests`) | All tests pass | 84 tests passed | Pass (PC only) |
+| 3        | Dashboard against a simulated ESP32: load chart upload and read-back, load-cell angle correction, fault displays, Xbox controller commands | Correct behaviour in the browser | Behaved as designed | Pass (simulated) |
+| 4        | Data pipeline on the hardware: ESP32 telemetry to the dashboard, hold-to-move motor control, sensor reading | Live data and motion | Working (per the 20 Sept status report) | Pass |
+| 5        | E-stop latch, dead-man stop, fault alarms, load chart and SafetyTask on the hardware | As designed | Not yet run on the crane | Pending |
+| 6        | Load cell tare, two-point calibration and angle correction with known weights | Load within tolerance at all boom angles | Not yet done | Pending |
+| 7        | Telescope encoder accuracy after the mechanical fix | Extension within a few mm of a ruler | Known issue: jumpy | Pending |
 
 ---
 
 ## Result Images / Videos
 
-Add images or videos of the working prototype.
+Not added yet. To be added after hardware testing (prototype photo, dashboard screenshots with real data, test results).
 
-````markdown
-![Prototype](images/prototype_photo.jpg)
-````
-
-Video Link:
-
-````markdown
-[Project Demo Video](https://drive.google.com/your-video-link)
-````
+A project video is linked under *Proposed System*.
 
 ---
 
 ## Applications
 
-Mention real-world applications of the project.
-
-1.
-2.
-3.
-4.
+1. Retrofit Safe Load Indicator for small truck-mounted pick-and-carry cranes that have none.
+2. A test platform for crane safety algorithms (load charts, anti-sway control, tipping prediction) before trying them on a real crane.
+3. Recording of lifts (angle, extension, load, alarms) for operator training and incident review.
+4. A base for a real-crane rated capacity indicator that uses hydraulic pressure as a load proxy.
 
 ---
 
 ## Advantages
 
-1.
-2.
-3.
-4.
+1. Low cost: common hobby-grade sensors and controllers, no proprietary hardware.
+2. Safety decisions are made on the ESP32, so they do not depend on the PC or the dashboard.
+3. Fail-safe behaviour: latched E-stop, motion that stops when commands stop arriving, and alarms for a dead load cell, boom sensor or telescope sensor.
+4. A conservative load chart lookup (never rounds the limit up) with an editable chart stored in flash.
+5. The load-cell correction is learned from known weights, so it works whatever the sensor's mounting.
+6. Every session is logged to CSV; the whole system has automated tests.
 
 ---
 
 ## Limitations
 
-1.
-2.
-3.
-4.
+1. Validated only on a 5 kg scale model; nothing has been tried on a real crane.
+2. The safety logic raises alarms only; it does not stop or restrict motion.
+3. The newest safety features have been tested on a PC but not yet on the hardware.
+4. No limit switches, so the axes have no end-of-travel protection.
+5. Some hardware is unfinished: the winch runs one way only, the telescope encoder is jumpy, and the hook and rope are not built.
+6. The load cell and IMU still need calibration on the final assembly, and the load-cell angle correction needs known weights.
+7. Boom lean comes from the boom-mounted IMU, so it is a lean warning, not a true chassis tilt.
 
 ---
 
 ## Future Scope
 
-Mention possible improvements.
-
-1.
-2.
-3.
-4.
+1. PID-based anti-sway control using IMU feedback on the swing axis.
+2. Tipping prediction from the outrigger FSRs, load and lean (LSTM planned).
+3. Operator scoring from the logged data.
+4. Limit switches and, if wanted, an optional motion lockout on overload.
+5. A second IMU on the base for a real chassis tilt reading.
+6. Integration on a real crane with a hydraulic pressure transducer as the load sensor, and field validation.
+7. Wireless (WiFi) telemetry and a 3D crane visualisation.
 
 ---
 
@@ -394,7 +410,7 @@ Mention possible improvements.
 | ------------------------- | --------------------------------------------------------- |
 | Paper Title               |                                                           |
 | Conference / Journal Name |                                                           |
-| Paper Status              | Not Started / Drafting / Submitted / Accepted / Published |
+| Paper Status              | Not started (planned for October 2026) |
 | Submission Date           |                                                           |
 | Paper Link                |                                                           |
 
@@ -402,16 +418,17 @@ Mention possible improvements.
 
 ## References
 
-Add references in IEEE format.
+Add references in IEEE format. The entries below were listed at the start of the project; complete the journal or conference name, volume, pages and year for each.
 
-Example:
-
-````text
-[1] Junqi Li, Qing Dong, "A Development Method for Load Adaptive Matching Digital Twin System of Bridge Cranes," Journal/Conference Name, vol. X, no. Y, pp. xx-yy, Year.
+```text
+[1] Junqi Li, Qing Dong, "A Development Method for Load Adaptive Matching Digital Twin System of Bridge Cranes"
 [2] Dae-Ho Jang, Gi-Tae Roh, "Simulation-Based Optimization of Crane Lifting Position and Capacity Using a Construction Digital Twin for Prefabricated Bridge Deck Assembly"
 [3] Yihai Fang, Yong K. Cho, "A Framework for Real-time Pro-active Safety Assistance for Mobile Crane Lifting Operations"
-[4] Datasheet / Website / Book reference.
-````
+[4] AS5600 12-bit contactless magnetic rotary position sensor, datasheet.
+[5] MPU-6050 six-axis motion tracking device, datasheet.
+[6] HX711 24-bit analog-to-digital converter for weigh scales, datasheet.
+[7] ESP32 series, datasheet.
+```
 
 ---
 
@@ -455,7 +472,4 @@ Optional:
 
 ````text
 MIT License / Creative Commons / Institute Use Only
-````
-
-````
 ````

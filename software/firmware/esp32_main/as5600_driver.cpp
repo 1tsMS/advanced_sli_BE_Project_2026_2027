@@ -62,7 +62,6 @@ float AS5600Driver::readAngle() {
     // Physical stepper motor cannot rotate > 45° in 10ms (~750 RPM).
     // Discard any impossible spike caused by I2C electrical noise.
     if (fabs(delta) > 45.0f) {
-        _glitchCount++;
         return _lastAngle;
     }
 

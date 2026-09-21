@@ -17,17 +17,6 @@ void HX711Driver::begin() {
     }
 }
 
-bool HX711Driver::readRaw(int32_t* value) {
-    if (_scale.is_ready()) {
-        _lastRawValue = _scale.read();
-        _connected = true;
-        *value = _lastRawValue;
-        return true;
-    }
-    *value = _lastRawValue;
-    return false;
-}
-
 float HX711Driver::getWeight() {
     if (_scale.is_ready()) {
         _lastRawValue = _scale.read();  // Read raw count directly
@@ -42,6 +31,7 @@ float HX711Driver::getWeight() {
         }
 
         _lastWeight = w;
+        _lastSampleMs = millis();
         _connected = true;
     }
     return _lastWeight;

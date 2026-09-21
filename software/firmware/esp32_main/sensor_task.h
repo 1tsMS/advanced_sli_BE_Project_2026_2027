@@ -44,6 +44,14 @@ void sensorTask_zeroIMU();
  */
 void sensorTask_requestIMUCalibration(uint8_t boomSrc, bool boomInv, uint8_t tiltSrc, bool tiltInv);
 
+/**
+ * State of the IMU-vs-encoder boom angle cross-check, for the DBG report.
+ * @param errDeg  |encoder-derived angle - IMU angle| from the last comparison
+ * @return 0=OFF (encoder or IMU unavailable), 1=LEARNING (direction not learned yet),
+ *         2=OK, 3=MISMATCH
+ */
+uint8_t sensorTask_getBoomCheck(float* errDeg);
+
 /** Load calibration offsets and axis settings from NVS flash */
 void sensorTask_loadCalibration();
 
@@ -52,6 +60,10 @@ void sensorTask_loadCalibration();
  *  @param invert  Inversion flag: 0=normal, 1=inverted, -1=keep current
  */
 void sensorTask_resetTelescope(float scale = 0.0f, int8_t invert = -1);
+
+/** Current telescope calibration (loaded from flash) — reported to the dashboard via DBG */
+float sensorTask_getTeleScale();
+bool  sensorTask_getTeleInvert();
 
 #endif // SENSOR_TASK_H
 

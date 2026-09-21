@@ -10,10 +10,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from ..api.models import (
-    CommandRequest, ConnectionRequest, LoadChartUpload,
-    StatusResponse, ApiResponse, ImuCalibrateRequest, TeleCalibrateRequest
+    CommandRequest, ConnectionRequest, LoadChartUpload, LoadChartResponse,
+    StatusResponse, ApiResponse, ImuCalibrateRequest, TeleCalibrateRequest,
+    LoadGainRequest
 )
 from ..api.ws_endpoint import ws_manager
+from ..core.load_chart import LoadChartError
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +25,16 @@ router = APIRouter(prefix="/api")
 _serial = None
 _command_router = None
 _session_logger = None
+_chart_manager = None
 
 
-def init_endpoints(serial, command_router, session_logger) -> None:
+def init_endpoints(serial, command_router, session_logger, chart_manager) -> None:
     """Inject subsystem dependencies (called from main.py)."""
-    global _serial, _command_router, _session_logger
+    global _serial, _command_router, _session_logger, _chart_manager
     _serial = serial
     _command_router = command_router
     _session_logger = session_logger
+    _chart_manager = chart_manager
 
 
 # ------------------------------------------------------------------ #
@@ -143,7 +147,7 @@ async def calibrate_imu(req: Optional[ImuCalibrateRequest] = None):
         b  = axis_idx(req.boomAxis, 0)          # boom source (default Roll=0)
         t  = axis_idx(req.tiltAxis, 1)          # tilt source (default Pitch=1)
         bi = 1 if req.boomInvert else 0
-        ti = 1 if (req.tiltInvert or req.swingInvert) else 0
+        ti = 1 if req.tiltInvert else 0
         cmd = f"CAL1 B{b} I{bi} T{t} Q{ti}"
     else:
         # Sensible defaults: boom=Roll(0) inverted, tilt=Pitch(1) not inverted
@@ -175,6 +179,29 @@ async def calibrate_telescope(req: Optional[TeleCalibrateRequest] = None):
     return ApiResponse(ok=ok, message=msg)
 
 
+@router.post("/calibrate/loadgain", response_model=ApiResponse)
+async def calibrate_load_gain(req: LoadGainRequest):
+    """Record the load-cell correction at the current boom angle (CAL3 W<kg>).
+
+    Hang a known weight on the hook, hold the boom still, then call this. The
+    ESP32 averages about half a second, stores the correction in flash and
+    reports the result as a $ACK,CAL3 line on the WebSocket.
+    """
+    if not _command_router:
+        raise HTTPException(500, "Command router not initialized")
+    ok, msg = _command_router.send(f"CAL3 W{req.weightKg:.3f}")
+    return ApiResponse(ok=ok, message=msg)
+
+
+@router.post("/calibrate/loadgain/clear", response_model=ApiResponse)
+async def clear_load_gain():
+    """Remove every recorded load-cell correction (back to no correction)."""
+    if not _command_router:
+        raise HTTPException(500, "Command router not initialized")
+    ok, msg = _command_router.send("CAL3 CLEAR")
+    return ApiResponse(ok=ok, message=msg)
+
+
 # ------------------------------------------------------------------ #
 # Debug
 # ------------------------------------------------------------------ #
@@ -192,33 +219,42 @@ async def request_debug_scan():
 
 @router.post("/loadchart/upload", response_model=ApiResponse)
 async def upload_load_chart(chart: LoadChartUpload):
-    """Upload a new load chart to ESP32 and store in NVS."""
-    if not _command_router:
-        raise HTTPException(500, "Command router not initialized")
+    """Upload a load chart to the ESP32 and save it to flash.
 
-    entries = chart.entries
-    if not entries:
-        raise HTTPException(400, "Empty load chart")
+    Succeeds only once the ESP32 confirms it stored every entry.
+    """
+    if not _chart_manager:
+        raise HTTPException(500, "Load chart manager not initialized")
 
-    # Send upload header
-    _command_router.send(f"LC UPLOAD {len(entries)}")
+    seen = set()
+    for e in chart.entries:
+        key = (round(e.angle, 3), round(e.extensionMM, 3))
+        if key in seen:
+            raise HTTPException(
+                400, f"Duplicate entry for angle {e.angle} / extension {e.extensionMM} mm"
+            )
+        seen.add(key)
 
-    # Send each entry
-    for entry in entries:
-        cmd = f"LC {entry.angle},{entry.extensionMM},{entry.limitKg}"
-        ok, msg = _command_router.send(cmd)
-        if not ok:
-            raise HTTPException(500, f"Failed to send entry: {msg}")
+    try:
+        saved = await _chart_manager.upload(chart.entries)
+    except LoadChartError as exc:
+        raise HTTPException(502, str(exc))
 
-    # Confirm save
-    ok, msg = _command_router.send("LC SAVE")
-    if ok:
-        return ApiResponse(
-            ok=True,
-            message=f"Load chart uploaded ({len(entries)} entries)"
-        )
-    else:
-        raise HTTPException(500, f"LC SAVE failed: {msg}")
+    return ApiResponse(ok=True, message=f"Load chart saved on ESP32 ({saved} entries)")
+
+
+@router.get("/loadchart", response_model=LoadChartResponse)
+async def read_load_chart():
+    """Read the load chart currently stored in the ESP32's flash."""
+    if not _chart_manager:
+        raise HTTPException(500, "Load chart manager not initialized")
+
+    try:
+        entries = await _chart_manager.read()
+    except LoadChartError as exc:
+        raise HTTPException(502, str(exc))
+
+    return LoadChartResponse(entries=entries)
 
 
 # ------------------------------------------------------------------ #

@@ -4,6 +4,7 @@ import {
   Activity, Settings, Zap, Cpu
 } from "lucide-react";
 import type { TabId } from "./types";
+import { STATUS, TONE_COLOR, hasStatus, loadTone } from "./status";
 import { useTelemetry } from "./hooks/useTelemetry";
 import { TelemetryPanel } from "./components/telemetry/TelemetryPanel";
 import { MotorControls } from "./components/controls/MotorControls";
@@ -11,6 +12,8 @@ import { CraneVisualizer } from "./components/visualizer/CraneVisualizer";
 import { Gauge } from "./components/shared/Gauge";
 import { SettingsTab } from "./components/settings/SettingsTab";
 import { DebugTab } from "./components/debug/DebugTab";
+import { DataLoggerTab } from "./components/datalogger/DataLoggerTab";
+import { LoadChartTab } from "./components/loadchart/LoadChartTab";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -29,6 +32,17 @@ async function estop() {
   try { await fetch(`${API_BASE}/estop`, { method: "POST" }); } catch { /* offline */ }
 }
 
+/** Clear the latched E-stop (sends RST; the ESP32 re-enables the motor drivers). */
+async function resetEstop() {
+  try {
+    await fetch(`${API_BASE}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "RST" }),
+    });
+  } catch { /* offline */ }
+}
+
 function fsrLevel(val: number): "off" | "low" | "mid" | "high" {
   if (val < 50)  return "off";
   const p = val / 4095;
@@ -41,7 +55,7 @@ export default function App() {
   const [tab, setTab]     = useState<TabId>("dashboard");
   const [speed, setSpeed] = useState(1000);
 
-  const { frame, debugReport, lastAck, wsStatus, espConnected } = useTelemetry();
+  const { frame, debugReport, lastAck, wsStatus, espConnected, history } = useTelemetry();
 
   const alarm = frame?.alarmLevel ?? 0;
   const alarmClass = ALARM_CLASS[alarm];
@@ -51,6 +65,10 @@ export default function App() {
   const alarmPillClass = wsStatus !== "connected" ? "ok" : alarmClass;
 
   const fsr = frame?.fsr ?? [0, 0, 0, 0];
+
+  // Load presentation is decided by the firmware (alarm level + status flags)
+  const loadFault = hasStatus(frame, STATUS.LOAD_FAULT);
+  const tone = loadTone(frame);
 
   return (
     <div className="app-shell">
@@ -109,22 +127,20 @@ export default function App() {
               </div>
               <div className="header-stat">
                 Load <span className="header-stat-val" style={{
-                  color: (frame.actualLoad > 10.0 || frame.actualLoad < -0.5) ? "var(--amber)" : "var(--text-primary)"
+                  color: loadFault ? "var(--amber)" : "var(--text-primary)"
                 }}>
-                  {frame.actualLoad > 10.0 || frame.actualLoad < -0.5
-                    ? "ERR (>10kg)"
-                    : `${frame.actualLoad.toFixed(2)} kg`}
+                  {loadFault ? "FAULT" : `${frame.actualLoad.toFixed(2)} kg`}
                 </span>
               </div>
-              <div className="header-stat">
-                <span className="header-stat-val" style={{
-                  color: (frame.actualLoad > 10.0 || frame.loadPercent >= 900)
-                    ? "var(--amber)"
-                    : frame.loadPercent >= 100 ? "var(--red)" : frame.loadPercent >= 80 ? "var(--amber)" : "var(--cyan)"
-                }}>
-                  {frame.actualLoad > 10.0 || frame.loadPercent >= 900 ? "UNCAL" : `${frame.loadPercent.toFixed(1)}%`}
-                </span>
-              </div>
+              {!loadFault && (
+                <div className="header-stat">
+                  <span className="header-stat-val" style={{
+                    color: tone === "ok" ? "var(--cyan)" : TONE_COLOR[tone]
+                  }}>
+                    {`${frame.loadPercent.toFixed(1)}%`}
+                  </span>
+                </div>
+              )}
             </>
           )}
 
@@ -137,6 +153,18 @@ export default function App() {
           </div>
 
           <div className="header-sep" />
+
+          {alarm === 3 && wsStatus === "connected" && (
+            <button
+              className="btn-ghost"
+              id="estop-reset-button"
+              onClick={resetEstop}
+              title="Clear the latched E-stop and re-enable the motor drivers"
+              style={{ padding: "4px 10px", fontSize: 11 }}
+            >
+              Reset E-stop
+            </button>
+          )}
 
           <button className="estop-btn" id="estop-button" onClick={estop}>
             <Zap size={12} />
@@ -173,10 +201,10 @@ export default function App() {
                       label="Load"
                       unit="%"
                       size={105}
-                      isError={(frame?.actualLoad ?? 0) > 10.0 || (frame?.actualLoad ?? 0) < -0.5 || (frame?.loadPercent ?? 0) >= 900}
+                      isError={loadFault}
                     />
                     <Gauge value={frame?.boomAngle ?? 0} min={0} max={80} label="Boom" unit="°" color="#00D68F" size={105} />
-                    <Gauge value={frame?.imuPitch ?? 0} min={-15} max={15} label="Tilt" unit="°" color="#00D4FF" size={105} />
+                    <Gauge value={frame?.boomLean ?? 0} min={-15} max={15} label="Lean" unit="°" color="#00D4FF" size={105} />
                   </div>
                 </div>
 
@@ -271,31 +299,18 @@ export default function App() {
             <SettingsTab wsConnected={wsStatus === "connected"} />
           )}
 
-          {/* ===== PLACEHOLDERS ===== */}
-          {(tab === "datalogger" || tab === "loadchart") && (
-            <PlaceholderTab name={tab} />
+          {/* ===== DATA LOGGER ===== */}
+          {tab === "datalogger" && (
+            <DataLoggerTab history={history} connected={espConnected} />
+          )}
+
+          {/* ===== LOAD CHART ===== */}
+          {tab === "loadchart" && (
+            <LoadChartTab connected={espConnected} />
           )}
 
         </div>
       </div>
-    </div>
-  );
-}
-
-function PlaceholderTab({ name }: { name: string }) {
-  const labels: Record<string, string> = {
-    datalogger: "Data Logger",
-    loadchart:  "Load Chart Editor",
-  };
-  return (
-    <div style={{
-      flex: 1, display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center",
-      color: "var(--text-muted)", gap: 8,
-    }}>
-      <Database size={32} strokeWidth={1} />
-      <div style={{ fontSize: 13, fontWeight: 600 }}>{labels[name]}</div>
-      <div style={{ fontSize: 11 }}>Coming in Phase 2</div>
     </div>
   );
 }

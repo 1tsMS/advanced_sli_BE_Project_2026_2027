@@ -1,5 +1,6 @@
 import type { TelemetryFrame } from "../../types";
 import { Compass, Scale, ShieldAlert, ArrowUpRight } from "lucide-react";
+import { STATUS, TONE_COLOR, hasStatus, loadLabel, loadTone } from "../../status";
 
 interface TelemetryPanelProps {
   frame: TelemetryFrame | null;
@@ -7,31 +8,39 @@ interface TelemetryPanelProps {
 
 const fmt = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : "--");
 
+type Tag = "ok" | "warn" | "danger";
+
+/** One row of the system status list. All states come from the firmware's flags. */
+function StatusRow({ name, tag, text }: { name: string; tag: Tag; text: string }) {
+  return (
+    <div className="tel-status-item">
+      <span className="status-item-name">{name}</span>
+      <span className={`status-item-tag ${tag}`}>{text}</span>
+    </div>
+  );
+}
+
 export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
   const actualLoad = f?.actualLoad ?? 0;
-  const safeLimit = f?.safeLoadLimit ?? 5.0;
-
-  // Sanity check: on a 5kg model crane, anything >10kg is uncalibrated raw ADC or sensor error
-  const isLoadError = actualLoad > 10.0 || actualLoad < -0.5 || (f?.loadPercent ?? 0) > 900;
-  const pct = isLoadError ? 0 : (f?.loadPercent ?? (safeLimit > 0 ? (actualLoad / safeLimit) * 100 : 0));
+  const safeLimit = f?.safeLoadLimit ?? 0;
+  const pct = f?.loadPercent ?? 0;
   const boomAngle = f?.boomAngle ?? 0;
   const extMM = f?.extensionMM ?? 0;
   const ropeLen = f?.ropeLength ?? 0;
   const swingAngle = f?.swingAngle ?? 0;
-  const roll = f?.imuRoll ?? 0;
-  const pitch = f?.imuPitch ?? 0;
+  const lean = f?.boomLean ?? 0;
 
   // Operating radius calculated from real base boom (22.5cm = 0.225m) + telescope extension
   const nominalBoomM = (225 + Math.max(0, extMM)) / 1000;
   const operatingRadiusM = nominalBoomM * Math.cos((boomAngle * Math.PI) / 180);
 
-  // Status classification
-  const isOverload = !isLoadError && pct >= 100;
-  const isWarn = !isLoadError && pct >= 80 && pct < 100;
-  const statusColor = isLoadError ? "var(--amber)" : isOverload ? "var(--red)" : isWarn ? "var(--amber)" : "var(--green)";
-  const statusLabel = isLoadError ? "LOAD SENSOR ERR" : isOverload ? "OVERLOAD" : isWarn ? "WARNING" : "NORMAL";
+  // What to show is decided by the firmware (alarm level + status flags)
+  const tone = loadTone(f);
+  const statusColor = TONE_COLOR[tone];
+  const statusLabel = loadLabel(f);
+  const loadFault = hasStatus(f, STATUS.LOAD_FAULT);
 
-  const imuWarn = Math.abs(roll) > 5 || Math.abs(pitch) > 5;
+  const leanWarn = hasStatus(f, STATUS.LEAN_WARN);
 
   return (
     <div className="panel tel-panel">
@@ -52,13 +61,13 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
           </div>
 
           <div className="hero-load-display">
-            {isLoadError ? (
+            {loadFault ? (
               <>
                 <span className="hero-load-value" style={{ color: "var(--amber)", fontSize: "1.4rem" }}>
-                  ERR (&gt;10kg)
+                  FAULT
                 </span>
                 <span className="hero-load-unit" style={{ color: "var(--text-muted)", fontSize: "0.75rem" }}>
-                  [Raw: {fmt(f?.loadCellRaw ?? actualLoad, 0)}]
+                  [Measured: {fmt(f?.measuredLoad ?? 0, 2)} kg]
                 </span>
               </>
             ) : (
@@ -77,9 +86,9 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
             <div
               className="hero-progress-fill"
               style={{
-                width: isLoadError ? "100%" : `${Math.min(100, Math.max(0, pct))}%`,
+                width: loadFault ? "100%" : `${Math.min(100, Math.max(0, pct))}%`,
                 background: statusColor,
-                opacity: isLoadError ? 0.4 : 1,
+                opacity: loadFault ? 0.4 : 1,
               }}
             />
             <div className="hero-progress-marker warn" style={{ left: "80%" }} />
@@ -88,10 +97,10 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
 
           <div className="hero-progress-meta">
             <span className="hero-pct-label" style={{ color: statusColor }}>
-              {isLoadError ? "UNCALIBRATED / OVERFLOW" : `${fmt(pct, 1)}% SWL`}
+              {loadFault ? "LOAD SENSOR FAULT" : `${fmt(pct, 1)}% SWL`}
             </span>
             <span className="hero-raw-sub">
-              {isLoadError ? "Tare/Calibrate in Debug" : `Sens: ${fmt(f?.measuredLoad ?? 0, 2)}kg`}
+              {loadFault ? "Check load cell wiring / tare in Debug" : `Measured: ${fmt(f?.measuredLoad ?? 0, 2)} kg`}
             </span>
           </div>
         </div>
@@ -134,30 +143,23 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
           </div>
         </div>
 
-        {/* SECTION: ORIENTATION & STABILITY */}
+        {/* SECTION: ORIENTATION */}
         <div className="tel-group">
           <div className="tel-group-header">
             <Compass size={13} />
-            <span>STABILITY & IMU</span>
+            <span>ORIENTATION</span>
           </div>
 
           <div className="tel-card-grid">
             <div className="tel-stat-card">
-              <span className="stat-label">Chassis Roll</span>
-              <span className={`stat-value ${Math.abs(roll) > 5 ? "danger" : Math.abs(roll) > 3 ? "warn" : ""}`}>
-                {fmt(roll, 1)}<span className="stat-unit">°</span>
+              <span className="stat-label">Boom Lean</span>
+              <span className={`stat-value ${leanWarn ? "danger" : ""}`}>
+                {fmt(lean, 1)}<span className="stat-unit">°</span>
               </span>
             </div>
 
             <div className="tel-stat-card">
-              <span className="stat-label">Chassis Pitch</span>
-              <span className={`stat-value ${Math.abs(pitch) > 5 ? "danger" : Math.abs(pitch) > 3 ? "warn" : ""}`}>
-                {fmt(pitch, 1)}<span className="stat-unit">°</span>
-              </span>
-            </div>
-
-            <div className="tel-stat-card" style={{ gridColumn: "span 2" }}>
-              <span className="stat-label">Slew / Turntable Swing</span>
+              <span className="stat-label">Slew / Swing</span>
               <span className="stat-value">
                 {fmt(swingAngle, 1)}<span className="stat-unit">°</span>
               </span>
@@ -165,27 +167,52 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
           </div>
         </div>
 
-        {/* SECTION: SYSTEM STATUS */}
+        {/* SECTION: SYSTEM STATUS — every row is a firmware flag, nothing is derived here */}
         <div className="tel-group">
           <div className="tel-group-header">
             <ShieldAlert size={13} />
-            <span>SAFETY INTERLOCKS</span>
+            <span>SYSTEM STATUS</span>
           </div>
 
           <div className="tel-status-list">
-            <div className="tel-status-item">
-              <span className="status-item-name">Sway / Tip Protection</span>
-              <span className={`status-item-tag ${imuWarn ? "warn" : "ok"}`}>
-                {imuWarn ? "TILT WARNING" : "STABLE"}
-              </span>
-            </div>
-
-            <div className="tel-status-item">
-              <span className="status-item-name">Load Limiter Cutoff</span>
-              <span className={`status-item-tag ${isOverload ? "danger" : "ok"}`}>
-                {isOverload ? "TRIPPED" : "ARMED"}
-              </span>
-            </div>
+            <StatusRow
+              name="Load sensor"
+              tag={hasStatus(f, STATUS.LOAD_FAULT) ? "danger" : "ok"}
+              text={hasStatus(f, STATUS.LOAD_FAULT) ? "FAULT" : "OK"}
+            />
+            <StatusRow
+              name="Boom angle sensor"
+              tag={hasStatus(f, STATUS.BOOM_FAULT | STATUS.BOOM_MISMATCH) ? "danger" : "ok"}
+              text={
+                hasStatus(f, STATUS.BOOM_FAULT) ? "FAULT"
+                : hasStatus(f, STATUS.BOOM_MISMATCH) ? "IMU ≠ ENCODER"
+                : "OK"
+              }
+            />
+            <StatusRow
+              name="Extension sensor"
+              tag={hasStatus(f, STATUS.EXT_FAULT) ? "danger" : "ok"}
+              text={hasStatus(f, STATUS.EXT_FAULT) ? "FAULT" : "OK"}
+            />
+            <StatusRow
+              name="Load chart"
+              tag={hasStatus(f, STATUS.OUT_OF_CHART) ? "danger" : hasStatus(f, STATUS.NO_CHART) ? "warn" : "ok"}
+              text={
+                hasStatus(f, STATUS.OUT_OF_CHART) ? "OUTSIDE CHART"
+                : hasStatus(f, STATUS.NO_CHART) ? "NONE (DEFAULT LIMIT)"
+                : "IN CHART"
+              }
+            />
+            <StatusRow
+              name="Boom lean"
+              tag={leanWarn ? "warn" : "ok"}
+              text={leanWarn ? "LEANING" : "OK"}
+            />
+            <StatusRow
+              name="E-stop"
+              tag={hasStatus(f, STATUS.ESTOP) ? "danger" : "ok"}
+              text={hasStatus(f, STATUS.ESTOP) ? "LATCHED" : "CLEAR"}
+            />
           </div>
         </div>
 

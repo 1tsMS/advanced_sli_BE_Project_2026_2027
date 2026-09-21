@@ -5,13 +5,14 @@
 //
 //  Packet format:
 //  $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
-//     ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
+//     ropeLenMM,fsr1,fsr2,fsr3,fsr4,boomLean,statusFlags,
 //     safeLimit,loadPct,alarmLvl\n
 // ============================================================
 #ifndef TELEMETRY_FMT_H
 #define TELEMETRY_FMT_H
 
 #include "config.h"
+#include "load_comp.h"
 
 class TelemetryFormatter {
 public:
@@ -36,6 +37,9 @@ public:
         bool mpuOK, bool hx711OK,
         const uint16_t fsr[4],
         long n20Ticks,
+        float teleScale, bool teleInvert,
+        const GainPoint* gains, uint8_t gainCount,
+        uint8_t boomCheckState, float boomCheckErrDeg,
         char* buffer, size_t bufLen
     );
 };
