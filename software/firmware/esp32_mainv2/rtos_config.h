@@ -6,6 +6,11 @@
 //    SensorTask    prio 5  100 Hz  telescope AS5600 (soft I2C), HX711, FSR ADC,
 //                                  N20 PCNT count, ALL encoder maths (single owner),
 //                                  calibration requests, shared SensorData
+//    SafetyTask    prio 4  50 Hz   the SLI: load % vs the load chart, blocked-motion
+//                                  mask, E-stop latch, bypass timer, $S status.
+//                                  Below SensorTask so a measurement is never late;
+//                                  on core 1 so the busy-waiting I2C on core 0
+//                                  can't delay a cut.
 //
 //  CORE 0 does communication and everything that may wait:
 //
@@ -44,6 +49,7 @@
 
 // ---- Priorities (higher number wins on its core) ----
 #define PRIO_SENSOR     5
+#define PRIO_SAFETY     4
 #define PRIO_COMMAND    5
 #define PRIO_SERIAL_TX  4
 #define PRIO_HWBUS      3
@@ -51,6 +57,7 @@
 
 // ---- Stack sizes in bytes (ESP-IDF counts bytes). Headroom is shown in DBG ($D,STACKS) ----
 #define STACK_SENSOR    6144
+#define STACK_SAFETY    4096    // one LoadChart copy (~330 B) + $S formatting
 #define STACK_COMMAND   8192    // DBG report buffer (1.5 KB) + parser
 #define STACK_SERIAL_TX 4096
 #define STACK_HWBUS     4096
@@ -59,6 +66,8 @@
 // ---- Rates ----
 #define SENSOR_PERIOD_MS        10    // 100 Hz
 #define HWBUS_PERIOD_MS         10    // 100 Hz
+#define SAFETY_PERIOD_MS        20    // 50 Hz
+#define SAFETY_STATUS_EVERY     10    // $S every 10th cycle (5 Hz) + on every change
 #define TELEMETRY_PERIOD_MS_DEF 20    // 50 Hz (CFG RATE can change it)
 #define COMMAND_IDLE_WAKE_MS    20    // dead-man check interval when no input
 #define STORAGE_COALESCE_MS     200   // merge bursts of setting changes into one write
@@ -68,6 +77,7 @@
 
 // ---- Task handles (set in setup, used for notifications and DBG) ----
 extern TaskHandle_t g_sensorTask;
+extern TaskHandle_t g_safetyTask;
 extern TaskHandle_t g_hwBusTask;
 extern TaskHandle_t g_commandTask;
 extern TaskHandle_t g_serialTxTask;

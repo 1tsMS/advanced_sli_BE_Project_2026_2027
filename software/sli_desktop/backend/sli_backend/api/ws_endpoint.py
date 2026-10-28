@@ -12,7 +12,7 @@ from typing import Set
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from ..api.models import TelemetryFrame, DebugReport
+from ..api.models import TelemetryFrame, DebugReport, SafetyStatus
 
 logger = logging.getLogger(__name__)
 
@@ -99,3 +99,13 @@ async def broadcast_ack(ack_line: str) -> None:
     """Push an acknowledgement string to all connected WS clients."""
     msg = {"type": "ack", "data": ack_line}
     await ws_manager.broadcast(msg)
+
+
+async def broadcast_safety(status: SafetyStatus) -> None:
+    """Push the ESP32's SLI status ($S) to all connected WS clients."""
+    await ws_manager.broadcast({"type": "safety", **status.model_dump()})
+
+
+async def broadcast_chart(chart: dict) -> None:
+    """Push the chart read back from the ESP32 (LC GET) to all connected WS clients."""
+    await ws_manager.broadcast({"type": "chart", "chart": None if chart.get("none") else chart})

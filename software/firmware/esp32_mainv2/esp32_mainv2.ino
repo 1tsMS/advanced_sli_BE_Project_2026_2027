@@ -6,6 +6,7 @@
 //  The full task table, with the reasoning, is in rtos_config.h:
 //
 //    Core 1  SensorTask    prio 5  100 Hz  telescope, HX711, FSR, N20, encoder maths
+//    Core 1  SafetyTask    prio 4  50 Hz   SLI: load chart, motion cut, E-stop latch
 //    Core 0  CommandTask   prio 5  event   USB RX -> G-code, E-stop, Mega, winch dead-man
 //    Core 0  SerialTxTask  prio 4  50 Hz   only writer of USB serial ($T + queued lines)
 //    Core 0  HwBusTask     prio 3  100 Hz  swing/boom encoders + IMU (software I2C)
@@ -25,6 +26,7 @@
 #include "sensor_task.h"
 #include "telemetry_task.h"
 #include "command_task.h"
+#include "safety_task.h"
 #include "esp_task_wdt.h"
 #include "esp_system.h"
 
@@ -32,6 +34,7 @@
 SemaphoreHandle_t sensorMutex = NULL;
 
 TaskHandle_t g_sensorTask   = NULL;
+TaskHandle_t g_safetyTask   = NULL;
 TaskHandle_t g_hwBusTask    = NULL;
 TaskHandle_t g_commandTask  = NULL;
 TaskHandle_t g_serialTxTask = NULL;
@@ -143,6 +146,7 @@ void setup() {
     sensorTask_init(&swingEncoder, &boomEncoder, &teleEncoder,
                     &imu, &loadCell, &fsrReader, &winchEncoder);
     sensorTask_loadCalibration();
+    safety_init();
     commandTask_init(&megaBridge, &winchEncoder, &loadCell,
                      &imu, &teleEncoder, &swingEncoder, &boomEncoder);
 
@@ -153,6 +157,7 @@ void setup() {
     startTask(commandTask,      "CommandTask",  STACK_COMMAND,   PRIO_COMMAND,   &g_commandTask,  CORE_COMMS);
     startTask(sensorTask_hwBus, "HwBusTask",    STACK_HWBUS,     PRIO_HWBUS,     &g_hwBusTask,    CORE_COMMS);
     startTask(sensorTask,       "SensorTask",   STACK_SENSOR,    PRIO_SENSOR,    &g_sensorTask,   CORE_REALTIME);
+    startTask(safetyTask,       "SafetyTask",   STACK_SAFETY,    PRIO_SAFETY,    &g_safetyTask,   CORE_REALTIME);
 
     // USB input wakes CommandTask directly (no polling)
     Serial.onReceive(commandTask_onSerialRx);

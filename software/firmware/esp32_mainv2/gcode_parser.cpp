@@ -118,6 +118,35 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
         }
     }
 
+    // --- LC ...: load chart (the safety module parses the rest) ---
+    if (line[0] == 'L' && line[1] == 'C' && (line[2] == ' ' || line[2] == '\0')) {
+        out->type = CMD_LOADCHART;
+        out->args = line + 2;
+        return PARSE_OK;
+    }
+
+    // --- SLI ON / SLI BYPASS <s> ---
+    if (strncmp(line, "SLI", 3) == 0) {
+        out->type = CMD_SLI;
+        out->sliOff = false;
+        if (strstr(line + 3, "OFF")) { out->sliOff = true; return PARSE_OK; }
+        if (strstr(line + 3, "ON"))  { out->bypassS = 0; return PARSE_OK; }
+        const char* b = strstr(line + 3, "BYPASS");
+        if (b) {
+            const int s = atoi(b + 6);
+            if (s <= 0) return PARSE_INVALID_PARAMS;
+            out->bypassS = (uint16_t)(s > 600 ? 600 : s);
+            return PARSE_OK;
+        }
+        return PARSE_INVALID_PARAMS;
+    }
+
+    // --- RST: clear a latched E-stop ---
+    if (strncmp(line, "RST", 3) == 0) {
+        out->type = CMD_RESET;
+        return PARSE_OK;
+    }
+
     // --- DBG: Debug request ---
     if (strncmp(line, "DBG", 3) == 0) {
         out->type = CMD_DEBUG;

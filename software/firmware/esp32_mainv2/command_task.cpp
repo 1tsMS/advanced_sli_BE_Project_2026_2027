@@ -6,6 +6,7 @@
 #include "sensor_task.h"
 #include "serial_out.h"
 #include "persist.h"
+#include "safety_task.h"
 #include "esp_task_wdt.h"
 
 // Reset reason string, set in setup() (shown in DBG)
@@ -45,6 +46,47 @@ static void queueCal(CalCommand type, uint8_t axis, float value, int8_t flag) {
 // browser frozen, button release missed). The Mega does the same for M1-M3.
 static bool          _winchActive    = false;
 static unsigned long _lastWinchCmdMs = 0;
+
+// ---- SLI enforcement ----
+// What each axis (1-4) was last told to do, so a motion that becomes blocked
+// while it runs can be stopped. Expires with the dead-man timeout, like the
+// motor itself.
+struct ActiveMotion {
+    bool          moving;
+    uint8_t       dir;
+    unsigned long lastMs;
+};
+static ActiveMotion _motion[5] = {};     // index = axis, 0 unused
+static uint8_t      _refusedDir[5];      // last refused dir per axis (+1), 0 = none: ACK once per episode
+
+static void stopAxis(uint8_t axis) {
+    if (axis == 4) {
+        if (_winch) _winch->stopMotor();
+        _winchActive = false;
+    } else if (_mega) {
+        MotorCommand stop = {};
+        stop.axis     = 0;
+        stop.stopAxis = axis;
+        _mega->sendMotorCommand(stop);
+    }
+    _motion[axis].moving = false;
+}
+
+/** Stop every axis that is moving in a direction the SLI no longer allows. */
+static void enforceSafety() {
+    const unsigned long now = millis();
+    for (uint8_t a = 1; a <= 4; a++) {
+        ActiveMotion& m = _motion[a];
+        if (!m.moving) continue;
+        if (now - m.lastMs > MOTION_TIMEOUT_MS) { m.moving = false; continue; }   // dead-man already stopped it
+        const char* why;
+        if (!safety_motionAllowed(a, m.dir, &why)) {
+            stopAxis(a);
+            _refusedDir[a] = m.dir + 1;
+            serialLine("$ACK,SLI,CUT,A%u,D%u,%s", a, m.dir, why);
+        }
+    }
+}
 
 void commandTask_init(
     MegaBridge* mega,
@@ -106,20 +148,37 @@ void commandTask(void* pvParameters) {
                 switch (cmd.type) {
 
                     case CMD_ESTOP: {
-                        // Emergency stop ALL motors
+                        // Emergency stop ALL motors, then latch: nothing moves until RST
                         if (_mega)  _mega->sendMotorCommand(cmd.motor);
                         if (_winch) _winch->stopMotor();
                         _winchActive = false;
-                        // Update alarm level
-                        if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-                            sensorData.alarmLevel = 3;  // ESTOP
-                            xSemaphoreGive(sensorMutex);
-                        }
+                        for (uint8_t a = 1; a <= 4; a++) _motion[a].moving = false;
+                        safety_estop();          // SafetyTask reports alarmLevel 3 while latched
                         serialLine("$ACK,ESTOP");
                         break;
                     }
 
                     case CMD_MOTOR: {
+                        const uint8_t axis = cmd.motor.axis;
+                        if (cmd.motor.speed == 0) {          // S0 = stop, always allowed
+                            stopAxis(axis);
+                            break;
+                        }
+                        const char* why;
+                        if (!safety_motionAllowed(axis, cmd.motor.direction, &why)) {
+                            // Held buttons repeat every 100 ms: stop + ACK once per episode
+                            if (_motion[axis].moving || _refusedDir[axis] != cmd.motor.direction + 1) {
+                                stopAxis(axis);
+                                _refusedDir[axis] = cmd.motor.direction + 1;
+                                serialLine("$ACK,SLI,REFUSED,A%u,D%u,%s", axis, cmd.motor.direction, why);
+                            }
+                            break;
+                        }
+                        _refusedDir[axis] = 0;
+                        _motion[axis].moving = true;
+                        _motion[axis].dir    = cmd.motor.direction;
+                        _motion[axis].lastMs = millis();
+
                         if (cmd.motor.axis == 4) {
                             // Winch — handled directly by ESP32 DRV8833
                             if (_winch) {
@@ -136,6 +195,10 @@ void commandTask(void* pvParameters) {
                     }
 
                     case CMD_STOP_AXIS: {
+                        if (cmd.motor.stopAxis >= 1 && cmd.motor.stopAxis <= 4) {
+                            _motion[cmd.motor.stopAxis].moving = false;
+                            _refusedDir[cmd.motor.stopAxis]    = 0;
+                        }
                         if (cmd.motor.stopAxis == 4) {
                             // Stop winch locally
                             if (_winch) _winch->stopMotor();
@@ -229,6 +292,28 @@ void commandTask(void* pvParameters) {
                         break;
                     }
 
+                    case CMD_LOADCHART:
+                        safety_handleLc(cmd.args);
+                        break;
+
+                    case CMD_SLI:
+                        if (cmd.sliOff) {
+                            safety_off();
+                            serialLine("$ACK,SLI,OFF");
+                        } else if (cmd.bypassS > 0) {
+                            safety_bypass(cmd.bypassS);
+                            serialLine("$ACK,SLI,BYPASS,%u", (unsigned)cmd.bypassS);
+                        } else {
+                            safety_arm();
+                            serialLine("$ACK,SLI,ARMED");
+                        }
+                        break;
+
+                    case CMD_RESET:
+                        safety_reset();
+                        serialLine("$ACK,RST");
+                        break;
+
                     default:
                         break;
                 }
@@ -239,6 +324,10 @@ void commandTask(void* pvParameters) {
                 }
             }
         }
+
+        // SLI: stop motions that became blocked while running (SafetyTask
+        // notifies on every newly blocked direction; this also runs every 20 ms)
+        enforceSafety();
 
         // Winch dead-man
         if (_winchActive && (millis() - _lastWinchCmdMs) > MOTION_TIMEOUT_MS) {

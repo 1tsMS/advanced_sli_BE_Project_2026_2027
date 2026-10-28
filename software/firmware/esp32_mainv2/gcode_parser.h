@@ -17,6 +17,11 @@
 //    CAL5 A1 I1      → Invert encoder axis 1 (swing)
 //    DBG             → Request debug/I2C scan report
 //    CFG RATE 50     → Set telemetry rate
+//    LC ...          → Load chart upload / readback (see load_chart.h)
+//    SLI ON          → SLI armed (ends a bypass)
+//    SLI BYPASS 300  → Disable the motion cut for 300 s (max 600; E-stop still works)
+//    SLI OFF         → Disable the motion cut until SLI ON or reboot (E-stop still works)
+//    RST             → Clear a latched E-stop
 // ============================================================
 #ifndef GCODE_PARSER_H
 #define GCODE_PARSER_H
@@ -43,7 +48,10 @@ enum CommandType {
     CMD_STOP_AXIS,     // M0 Ax
     CMD_CALIBRATE,     // CAL0, CAL1, CAL2
     CMD_DEBUG,         // DBG
-    CMD_CONFIG         // CFG
+    CMD_CONFIG,        // CFG
+    CMD_LOADCHART,     // LC ...
+    CMD_SLI,           // SLI ON / SLI BYPASS <s>
+    CMD_RESET          // RST
 };
 
 /**
@@ -64,6 +72,9 @@ struct ParsedCommand {
     float        encValue;    // Filled for CAL_ENC_REF (deg, or mm for the telescope)
     int8_t       encInvert;   // Filled for CAL_ENC_INVERT / CAL_AXIS_SCALE (0 or 1, -1 = keep)
     uint8_t      calSub;      // CAL_LOAD: 0 = record weight W, 1 = CLEAR points, 2 = set scale S
+    const char*  args;        // CMD_LOADCHART: text after "LC" (points into the caller's line)
+    uint16_t     bypassS;     // CMD_SLI: bypass seconds, 0 = arm
+    bool         sliOff;      // CMD_SLI: SLI OFF
 };
 
 class GCodeParser {

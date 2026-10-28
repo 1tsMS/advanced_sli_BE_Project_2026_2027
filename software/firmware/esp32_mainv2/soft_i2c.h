@@ -62,6 +62,7 @@ public:
 
     /** Start a write transaction. @return true if the device ACKed its address */
     inline bool beginTransmission(uint8_t addr) {
+        _fault = false;
         start();
         return writeByte((uint8_t)(addr << 1));
     }
@@ -74,6 +75,7 @@ public:
     inline uint8_t requestFrom(uint8_t addr, uint8_t qty) {
         _rxIndex = 0;
         _rxCount = 0;
+        _fault   = false;
         if (qty > sizeof(_rxBuf)) qty = sizeof(_rxBuf);
         start();
         if (!writeByte((uint8_t)((addr << 1) | 0x01))) {
@@ -85,6 +87,7 @@ public:
             _rxCount++;
         }
         stop();
+        if (_fault) _rxCount = 0;                // SCL never rose: bytes are noise
         return _rxCount;
     }
 
@@ -98,6 +101,7 @@ public:
     inline bool readRegs(uint8_t addr, uint8_t reg, uint8_t* buf, uint8_t len) {
         if (!beginTransmission(addr) || !write(reg)) { stop(); return false; }
         stop();
+        if (_fault) return false;
         if (requestFrom(addr, len) < len) return false;
         for (uint8_t i = 0; i < len; i++) buf[i] = read();
         return true;
@@ -107,18 +111,30 @@ public:
     inline bool writeReg(uint8_t addr, uint8_t reg, uint8_t val) {
         const bool ok = beginTransmission(addr) && write(reg) && write(val);
         stop();
-        return ok;
+        return ok && !_fault;
     }
+
+    /** Transfers where SCL was held low after release (shorted / broken / stuck clock line) */
+    inline uint32_t sclFaults() const { return _sclFaults; }
 
 private:
     gpio_num_t _sda, _scl;
     uint32_t   _delay;
     uint8_t    _rxBuf[32];
     uint8_t    _rxIndex = 0, _rxCount = 0;
+    bool       _fault = false;      // set when SCL failed to rise during this transfer
+    uint32_t   _sclFaults = 0;
 
     inline void sdaHigh() { gpio_set_level(_sda, 1); }
     inline void sdaLow()  { gpio_set_level(_sda, 0); }
-    inline void sclHigh() { gpio_set_level(_scl, 1); delayMicroseconds(_delay); }
+    /** Release SCL and check it actually went high. Nothing on these buses
+     *  clock-stretches, so a low SCL here means a wiring fault: the transfer
+     *  is marked bad instead of returning bits sampled off a dead clock. */
+    inline void sclHigh() {
+        gpio_set_level(_scl, 1);
+        delayMicroseconds(_delay);
+        if (gpio_get_level(_scl) == 0 && !_fault) { _fault = true; _sclFaults++; }
+    }
     inline void sclLow()  { gpio_set_level(_scl, 0); delayMicroseconds(_delay); }
 
     /** START: SDA falls while SCL is high */
@@ -149,7 +165,7 @@ private:
         sclHigh();
         const bool ack = (gpio_get_level(_sda) == 0);
         sclLow();
-        return ack;
+        return ack && !_fault;
     }
 
     /** Clock in 8 bits MSB-first, then send ACK (more to read) or NACK (last byte). */

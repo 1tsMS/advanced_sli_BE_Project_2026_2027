@@ -32,6 +32,9 @@ TELEMETRY_FIELDS = [
 LOG_DIR = Path(__file__).parent.parent.parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Load chart profiles (one JSON file each, made in the Load Chart tab)
+PROFILE_DIR = Path(__file__).parent.parent.parent / "profiles"
+
 # CORS (allow Electron frontend)
 CORS_ORIGINS = [
     "http://localhost:5173",   # Vite dev server

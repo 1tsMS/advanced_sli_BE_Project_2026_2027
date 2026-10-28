@@ -1,5 +1,6 @@
 #define IN1 13
 #define IN2 14
+#define STBY 12   // DRV8833 nSLEEP (EEP/STBY on the board): LOW or floating = driver asleep
 
 #define ENC_A 18
 #define ENC_B 19
@@ -22,6 +23,8 @@ void setup() {
   // Motor driver
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
+  pinMode(STBY, OUTPUT);
+  digitalWrite(STBY, HIGH);   // wake the driver (same as the main firmware)
 
   // Encoder
   pinMode(ENC_A, INPUT_PULLUP);

@@ -10,8 +10,9 @@ enum : uint32_t {
     D_TELE = 1u << 4, D_ROPE = 1u << 5, D_IMU  = 1u << 6,
     D_ROT0 = 1u << 7, D_ROT1 = 1u << 8, D_TARE = 1u << 9,
     D_LOADSCALE = 1u << 10, D_SCALE0 = 1u << 11, D_SCALE1 = 1u << 12,
+    D_CHART = 1u << 13,
 };
-static const uint32_t D_LAST = D_SCALE1;
+static const uint32_t D_LAST = D_CHART;
 
 struct Staged {
     PersistPos    pos[4];
@@ -25,6 +26,7 @@ struct Staged {
     int32_t       tare;
     float         loadScale;
     float         axisScale[2];
+    LoadChart     chart;
 };
 
 static Staged       _staged;
@@ -108,6 +110,14 @@ void persist_setAxisScale(uint8_t idx, float unitsPerRev) {
     markDirty(D_SCALE0 << idx);
 }
 
+void persist_setLoadChart(const LoadChart& chart) {
+    taskENTER_CRITICAL(&_mux);
+    _staged.chart = chart;
+    _dirty |= D_CHART;
+    taskEXIT_CRITICAL(&_mux);
+    markDirty(D_CHART);
+}
+
 uint32_t persist_writes()   { return _writes; }
 uint32_t persist_failures() { return _failures; }
 
@@ -156,6 +166,9 @@ static bool writeGroup(uint32_t bit, const Staged& s) {
     } else if (bit == D_SCALE0 || bit == D_SCALE1) {
         if (!p.begin("sli_enc", false)) return false;
         ok = p.putFloat(bit == D_SCALE0 ? "s_s" : "b_s", s.axisScale[bit == D_SCALE0 ? 0 : 1]);
+    } else if (bit == D_CHART) {
+        if (!p.begin("sli_lc", false)) return false;
+        ok = p.putBytes("chart", &s.chart, sizeof(LoadChart)) == sizeof(LoadChart);
     }
     p.end();
     return ok;

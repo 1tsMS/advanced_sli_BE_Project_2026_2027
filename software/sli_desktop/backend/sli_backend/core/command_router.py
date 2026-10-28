@@ -28,9 +28,15 @@ _VALID_PATTERNS = [
     re.compile(r"^CAL8\s+A[1-3]\s+S\d+(\.\d+)?(\s+I[01])?$"),       # Axis ratio: units per encoder rev
     re.compile(r"^DBG$"),                                            # Debug request
     re.compile(r"^CFG\s+RATE\s+\d+$"),                              # Config rate
-    re.compile(r"^LC\s+UPLOAD\s+\d+$"),                             # Load chart upload start
-    re.compile(r"^LC\s+[\d.]+,[\d.]+,[\d.]+$"),                     # Load chart entry
-    re.compile(r"^LC\s+SAVE$"),                                      # Load chart save
+    # Load chart upload (firmware load_chart.h): BEGIN, axes, rows, zones, thresholds, COMMIT/GET
+    re.compile(r"^LC\s+BEGIN\s+[2-8]\s+[2-6]\s+[\w .-]{1,15}$", re.ASCII),
+    re.compile(r"^LC\s+[AE](\s+-?\d+(\.\d+)?){2,8}$"),
+    re.compile(r"^LC\s+R\s+[0-7](\s+\d+(\.\d+)?){2,6}$"),
+    re.compile(r"^LC\s+Z(\s+\d+(\.\d+)?){3}$"),
+    re.compile(r"^LC\s+P(\s+\d+(\.\d+)?){2}$"),
+    re.compile(r"^LC\s+(COMMIT|GET)$"),
+    re.compile(r"^SLI\s+(ON|OFF|BYPASS\s+\d{1,3})$"),                # Arm / off / timed bypass (<= 600 s on the ESP32)
+    re.compile(r"^RST$"),                                            # Clear latched E-stop
 ]
 
 

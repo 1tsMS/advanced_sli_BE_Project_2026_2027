@@ -12,6 +12,9 @@ import { Gauge } from "./components/shared/Gauge";
 import { SettingsTab } from "./components/settings/SettingsTab";
 import { DebugTab } from "./components/debug/DebugTab";
 import { RecordButton } from "./components/controls/RecordButton";
+import { SliControl, BypassBanner, BlockAlert } from "./components/sli/SliControl";
+import { liveSafety, useNow } from "./components/sli/sliStatus";
+import { LoadChartTab } from "./components/loadchart/LoadChartTab";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -42,7 +45,8 @@ export default function App() {
   const [tab, setTab]     = useState<TabId>("dashboard");
   const [speed, setSpeed] = useState(1000);
 
-  const { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus } = useTelemetry();
+  const { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus,
+          safety, craneChart, lcResult, sliBlock } = useTelemetry();
 
   const alarm = frame?.alarmLevel ?? 0;
   const alarmClass = ALARM_CLASS[alarm];
@@ -52,6 +56,7 @@ export default function App() {
   const alarmPillClass = wsStatus !== "connected" ? "ok" : alarmClass;
 
   const fsr = frame?.fsr ?? [0, 0, 0, 0];
+  const sliLive = !!liveSafety(safety, useNow()) && wsStatus === "connected";
 
   return (
     <div className="app-shell">
@@ -131,11 +136,15 @@ export default function App() {
 
           <div className="header-fill" />
 
-          {/* Alarm pill */}
-          <div className={`alarm-pill ${alarmPillClass}`}>
-            <span>●</span>
-            {alarmLabel}
-          </div>
+          {/* Alarm pill: only without a live SLI status (old firmware); the SLI chip says it better */}
+          {!sliLive && (
+            <div className={`alarm-pill ${alarmPillClass}`}>
+              <span>●</span>
+              {alarmLabel}
+            </div>
+          )}
+
+          <SliControl safety={safety} />
 
           <div className="header-sep" />
 
@@ -146,6 +155,9 @@ export default function App() {
             E-STOP
           </button>
         </div>
+
+        <BypassBanner safety={safety} />
+        <BlockAlert safety={safety} block={sliBlock} />
 
         {/* Page content */}
         <div className="page">
@@ -185,7 +197,7 @@ export default function App() {
 
                 {/* Motor controls below */}
                 <div style={{ flexShrink: 0, minHeight: 0 }}>
-                  <MotorControls speed={speed} onSpeedChange={setSpeed} />
+                  <MotorControls speed={speed} onSpeedChange={setSpeed} safety={safety} />
                 </div>
               </div>
 
@@ -274,8 +286,13 @@ export default function App() {
             <SettingsTab wsConnected={wsStatus === "connected"} />
           )}
 
+          {/* ===== LOAD CHART ===== */}
+          {tab === "loadchart" && (
+            <LoadChartTab frame={frame} safety={safety} craneChart={craneChart} lcResult={lcResult} />
+          )}
+
           {/* ===== PLACEHOLDERS ===== */}
-          {(tab === "datalogger" || tab === "loadchart") && (
+          {tab === "datalogger" && (
             <PlaceholderTab name={tab} />
           )}
 
@@ -288,7 +305,6 @@ export default function App() {
 function PlaceholderTab({ name }: { name: string }) {
   const labels: Record<string, string> = {
     datalogger: "Data Logger",
-    loadchart:  "Load Chart Editor",
   };
   return (
     <div style={{

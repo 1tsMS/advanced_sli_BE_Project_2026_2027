@@ -35,6 +35,39 @@ export interface RecordingState {
   elapsedSec: number;
 }
 
+/** $S from the ESP32: the SLI state (5 Hz + on every change). */
+export type SliState = "OK" | "WARN" | "CUT" | "FAULT" | "ESTOP";
+export interface SafetyStatus {
+  state: SliState;
+  pct: number;
+  capKg: number;
+  zone: number;          // -1 = none
+  bypassLeftS: number;   // 0 = armed
+  blocked: number;       // bit (axis-1)*2 + dir set = that motion is cut
+  chart: string;         // active chart name on the ESP32, "NONE" if none
+  mode: "ARMED" | "BYPASS" | "OFF";   // state + blocked are enforced only when ARMED
+  timestamp: number;     // 0 = nothing received yet
+}
+
+export interface LoadZone {
+  fromDeg: number;
+  toDeg: number;
+  factor: number;
+}
+
+/** Load chart profile (backend JSON + ESP32 upload). Rows follow anglesDeg, columns extensionsMM. */
+export interface LoadChartProfile {
+  name: string;
+  description: string;
+  anglesDeg: number[];
+  extensionsMM: number[];
+  capacityKg: number[][];
+  zones: LoadZone[];
+  warnPct: number;
+  cutPct: number;
+  updated?: string | null;
+}
+
 export type TabId =
   | "dashboard"
   | "debug"

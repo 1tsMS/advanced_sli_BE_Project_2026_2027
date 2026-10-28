@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Square, Gamepad2 } from "lucide-react";
 import { useHoldToMove, type MotionAxis } from "../../hooks/useHoldToMove";
 import { useGamepad } from "../../hooks/useGamepad";
+import { isBlocked, liveSafety, useNow, type ReceivedSafety } from "../sli/sliStatus";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -16,6 +17,7 @@ const AXES: { id: MotionAxis; name: string; d0Label: string; d1Label: string; d0
 interface MotorControlsProps {
   speed: number;
   onSpeedChange: (s: number) => void;
+  safety: ReceivedSafety;
 }
 
 /**
@@ -23,8 +25,11 @@ interface MotorControlsProps {
  * repeats the command while held; the firmware stops any axis whose command
  * stops arriving for 400 ms (dead-man).
  */
-export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
+export function MotorControls({ speed, onSpeedChange, safety }: MotorControlsProps) {
   const motion = useHoldToMove();
+  const sli = liveSafety(safety, useNow());
+  // Shown before pressing; the ESP32 still decides (and the alert bar explains a refusal)
+  const cut = (axis: number, dir: 0 | 1) => isBlocked(sli, axis, dir);
   const { connected: gpConnected } = useGamepad(motion, speed);
   const [pressed, setPressed] = useState<string | null>(null);   // "axis-dir" of the held button
 
@@ -69,15 +74,15 @@ export function MotorControls({ speed, onSpeedChange }: MotorControlsProps) {
               <span className="axis-id">M{ax.id}</span>
             </div>
             <div className="axis-btns">
-              <button className={`mtr-btn ${pressed === `${ax.id}-0` ? "pressed" : ""}`}
-                      title={ax.d0Title} {...holdProps(ax.id, 0)}>
+              <button className={`mtr-btn ${pressed === `${ax.id}-0` ? "pressed" : ""} ${cut(ax.id, 0) ? "sli-cut" : ""}`}
+                      title={cut(ax.id, 0) ? `${ax.d0Title}: blocked by the SLI` : ax.d0Title} {...holdProps(ax.id, 0)}>
                 {ax.d0Label}
               </button>
               <button className="mtr-btn stop" title="Stop" onClick={() => end(ax.id)}>
                 <Square size={9} />
               </button>
-              <button className={`mtr-btn ${pressed === `${ax.id}-1` ? "pressed" : ""}`}
-                      title={ax.d1Title} {...holdProps(ax.id, 1)}>
+              <button className={`mtr-btn ${pressed === `${ax.id}-1` ? "pressed" : ""} ${cut(ax.id, 1) ? "sli-cut" : ""}`}
+                      title={cut(ax.id, 1) ? `${ax.d1Title}: blocked by the SLI` : ax.d1Title} {...holdProps(ax.id, 1)}>
                 {ax.d1Label}
               </button>
             </div>

@@ -16,6 +16,7 @@
 #define PERSIST_H
 
 #include <Arduino.h>
+#include "load_chart.h"
 
 struct PersistPos {          // one axis position (sli_pos2)
     float    ref;
@@ -44,6 +45,7 @@ void persist_setRotary(uint8_t idx, const PersistRotary& r, bool boomCalibrated)
 void persist_setTareOffset(int32_t offset);
 void persist_setLoadScale(float countsPerKg);
 void persist_setAxisScale(uint8_t idx, float unitsPerRev);   // idx 0 swing, 1 boom
+void persist_setLoadChart(const LoadChart& chart);           // sli_lc / chart (blob)
 
 /** StorageTask (core 0, lowest priority): the only writer of NVS. */
 void storageTask(void* pvParameters);

@@ -2,6 +2,7 @@
 REST API endpoints — all HTTP routes for the SLI backend.
 """
 from __future__ import annotations
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -10,12 +11,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from ..api.models import (
-    CommandRequest, ConnectionRequest, LoadChartUpload,
+    CommandRequest, ConnectionRequest, LoadChartProfile, SafetyStatus, BypassRequest,
     StatusResponse, ApiResponse, ImuCalibrateRequest, TeleCalibrateRequest,
     RecordingState, EncoderCalibrateRequest, RopeCalibrateRequest,
     LoadCalibrateRequest, AxisScaleRequest,
 )
 from ..api.ws_endpoint import ws_manager
+from ..config.settings import PROFILE_DIR
+from ..core import load_chart
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +28,13 @@ router = APIRouter(prefix="/api")
 _serial = None
 _command_router = None
 _session_logger = None
+_profiles = load_chart.ProfileStore(PROFILE_DIR)
+_safety = SafetyStatus()          # latest $S from the ESP32
+
+
+def set_safety_status(status: SafetyStatus) -> None:
+    global _safety
+    _safety = status
 
 
 def init_endpoints(serial, command_router, session_logger) -> None:
@@ -324,35 +334,119 @@ async def request_debug_scan():
 # Load chart
 # ------------------------------------------------------------------ #
 
-@router.post("/loadchart/upload", response_model=ApiResponse)
-async def upload_load_chart(chart: LoadChartUpload):
-    """Upload a new load chart to ESP32 and store in NVS."""
+@router.get("/loadchart/profiles", response_model=list[LoadChartProfile])
+async def list_profiles():
+    """All saved load chart profiles (JSON files in backend/profiles)."""
+    return _profiles.list()
+
+
+@router.put("/loadchart/profiles/{name}", response_model=LoadChartProfile)
+async def save_profile(name: str, profile: LoadChartProfile):
+    """Create or overwrite a profile. Rejected with the reason if the ESP32 would reject it."""
+    if profile.name != name:
+        raise HTTPException(400, "Name in the URL and the body differ")
+    err = load_chart.validate(profile)
+    if err:
+        raise HTTPException(400, err)
+    return _profiles.save(profile)
+
+
+@router.delete("/loadchart/profiles/{name}", response_model=ApiResponse)
+async def delete_profile(name: str):
+    try:
+        found = _profiles.delete(name)
+    except ValueError:
+        raise HTTPException(400, "Bad profile name")
+    if not found:
+        raise HTTPException(404, f"No profile '{name}'")
+    return ApiResponse(ok=True, message=f"Deleted {name}")
+
+
+# Gap between LC lines: the ESP32 handles each in well under 1 ms, this only
+# keeps a burst far below its 512-byte USB RX buffer.
+_LC_LINE_GAP_S = 0.03
+
+
+@router.post("/loadchart/profiles/{name}/upload", response_model=ApiResponse)
+async def upload_profile(name: str):
+    """Send a saved profile to the ESP32 (LC BEGIN ... COMMIT). The ESP32 validates
+    again and answers $ACK,LC,COMMITTED,<name> or $ACK,LC,ERR,<reason> over the WebSocket."""
     if not _command_router:
         raise HTTPException(500, "Command router not initialized")
-
-    entries = chart.entries
-    if not entries:
-        raise HTTPException(400, "Empty load chart")
-
-    # Send upload header
-    _command_router.send(f"LC UPLOAD {len(entries)}")
-
-    # Send each entry
-    for entry in entries:
-        cmd = f"LC {entry.angle},{entry.extensionMM},{entry.limitKg}"
+    try:
+        profile = _profiles.get(name)
+    except ValueError:
+        raise HTTPException(400, "Bad profile name")
+    if profile is None:
+        raise HTTPException(404, f"No profile '{name}'")
+    err = load_chart.validate(profile)
+    if err:
+        raise HTTPException(400, err)
+    cmds = load_chart.to_commands(profile)
+    for cmd in cmds:
         ok, msg = _command_router.send(cmd)
         if not ok:
-            raise HTTPException(500, f"Failed to send entry: {msg}")
+            raise HTTPException(400, f"{cmd}: {msg}")
+        await asyncio.sleep(_LC_LINE_GAP_S)
+    return ApiResponse(ok=True, message=f"Sent {name} ({len(cmds)} lines), waiting for the ESP32")
 
-    # Confirm save
-    ok, msg = _command_router.send("LC SAVE")
-    if ok:
-        return ApiResponse(
-            ok=True,
-            message=f"Load chart uploaded ({len(entries)} entries)"
-        )
-    else:
-        raise HTTPException(500, f"LC SAVE failed: {msg}")
+
+@router.post("/loadchart/readback", response_model=ApiResponse)
+async def readback_chart():
+    """Ask the ESP32 for its active chart; it arrives as a "chart" WebSocket message."""
+    ok, msg = _command_router.send("LC GET")
+    if not ok:
+        raise HTTPException(400, msg)
+    return ApiResponse(ok=True, message="Requested chart from the ESP32")
+
+
+# ------------------------------------------------------------------ #
+# SLI control (enforcement itself is on the ESP32)
+# ------------------------------------------------------------------ #
+
+@router.get("/sli", response_model=SafetyStatus)
+async def get_sli():
+    """Latest $S status (timestamp 0 = none received since the backend started)."""
+    return _safety
+
+
+@router.post("/sli/bypass", response_model=ApiResponse)
+async def sli_bypass(req: BypassRequest):
+    """Timed bypass of the motion cut (E-stop and dead-man stay active)."""
+    if not (1 <= req.seconds <= 600):
+        raise HTTPException(400, "Bypass must be 1-600 s")
+    ok, msg = _command_router.send(f"SLI BYPASS {req.seconds}")
+    if not ok:
+        raise HTTPException(400, msg)
+    logger.warning(f"SLI BYPASSED for {req.seconds} s")
+    return ApiResponse(ok=True, message=f"Bypass {req.seconds} s")
+
+
+@router.post("/sli/off", response_model=ApiResponse)
+async def sli_off():
+    """SLI OFF: no motion cut until re-armed or the ESP32 reboots (E-stop and dead-man stay)."""
+    ok, msg = _command_router.send("SLI OFF")
+    if not ok:
+        raise HTTPException(400, msg)
+    logger.warning("SLI turned OFF")
+    return ApiResponse(ok=True, message="SLI off")
+
+
+@router.post("/sli/arm", response_model=ApiResponse)
+async def sli_arm():
+    ok, msg = _command_router.send("SLI ON")
+    if not ok:
+        raise HTTPException(400, msg)
+    return ApiResponse(ok=True, message="SLI armed")
+
+
+@router.post("/sli/reset", response_model=ApiResponse)
+async def sli_reset():
+    """Clear a latched E-stop."""
+    ok, msg = _command_router.send("RST")
+    if not ok:
+        raise HTTPException(400, msg)
+    return ApiResponse(ok=True, message="E-stop reset")
 
 
 # ------------------------------------------------------------------ #

@@ -36,8 +36,11 @@ struct StepperState {
     uint8_t stepPin;
     uint8_t dirPin;
     uint8_t enPin;
+    float   accel;         // ramp-up rate in steps/s^2; 0 = no ramp (jump to target)
     bool    running;
-    uint8_t direction;
+    uint8_t direction;     // direction currently on the DIR pin
+    float   curSps;        // speed right now (steps/s)
+    float   targetSps;     // speed last commanded
     uint32_t speed;        // Delay between steps in microseconds (uint16 overflowed below ~16 steps/s)
     unsigned long lastStepTime;
     unsigned long lastCmdMs;   // millis() of the last M-command (dead-man watchdog)
@@ -47,11 +50,21 @@ struct StepperState {
 // (the dashboard repeats it every 100 ms while held). Same value as the ESP32.
 #define MOTION_TIMEOUT_MS  400
 
+// Ramp-up only. A stepper starting straight at 1000 steps/s under load stalls
+// far below its rated torque; starting at START_SPS and ramping up lets it
+// reach speeds it could never jump to. Stops are always instant (release,
+// M0, T0, dead-man). Tune LIFT accel on the loaded crane: raise it until the
+// lift skips at start, then back off ~30%.
+#define START_SPS     100.0f   // speed a ramped axis starts at (below pull-in)
+#define RAMP_TICK_US  1000UL   // ramp update period
+
 StepperState motors[3] = {
-    {SWING_STEP, SWING_DIR, SWING_EN, false, 0, 1000, 0, 0},  // M1 = Swing
-    {LIFT_STEP,  LIFT_DIR,  LIFT_EN,  false, 0, 1000, 0, 0},  // M2 = Lift
-    {TELE_STEP,  TELE_DIR,  TELE_EN,  false, 0, 1000, 0, 0}   // M3 = Telescope
+    // pins                          accel (steps/s^2)
+    {SWING_STEP, SWING_DIR, SWING_EN,     0.0f, false, 0, 0, 0, 1000, 0, 0},  // M1 = Swing (no ramp: input shaping on ESP32 later)
+    {LIFT_STEP,  LIFT_DIR,  LIFT_EN,   1500.0f, false, 0, 0, 0, 1000, 0, 0},  // M2 = Lift   <- TUNE HERE
+    {TELE_STEP,  TELE_DIR,  TELE_EN,      0.0f, false, 0, 0, 0, 1000, 0, 0}   // M3 = Telescope (no ramp)
 };
+unsigned long lastRampUs = 0;
 
 // ======================== SERIAL BUFFERS ========================
 // One line buffer per port: with a shared buffer, a byte arriving on USB
@@ -106,13 +119,21 @@ void loop() {
     unsigned long nowMs = millis();
     for (int i = 0; i < 3; i++) {
         if (motors[i].running && (nowMs - motors[i].lastCmdMs) > MOTION_TIMEOUT_MS) {
-            motors[i].running = false;
+            hardStop(motors[i]);
             Serial.print("WATCHDOG stopped axis "); Serial.println(i + 1);
         }
     }
 
-    // 3. Step any running motors using non-blocking timing
+    // 3. Ramp speeds toward their targets
     unsigned long now = micros();
+    if (now - lastRampUs >= RAMP_TICK_US) {
+        const float dt = (now - lastRampUs) / 1000000.0f;
+        lastRampUs = now;
+        for (int i = 0; i < 3; i++) updateRamp(motors[i], dt);
+    }
+
+    // 4. Step any running motors using non-blocking timing
+    now = micros();
     for (int i = 0; i < 3; i++) {
         if (motors[i].running && (now - motors[i].lastStepTime >= motors[i].speed)) {
             digitalWrite(motors[i].stepPin, HIGH);
@@ -124,6 +145,24 @@ void loop() {
             if (now - motors[i].lastStepTime >= motors[i].speed) motors[i].lastStepTime = now;
         }
     }
+}
+
+// ======================== ACCELERATION RAMP ========================
+// Raises curSps toward targetSps by accel*dt per tick. Lower targets
+// (slider moved down) are applied at once.
+void updateRamp(StepperState& m, float dt) {
+    if (!m.running || m.curSps == m.targetSps) return;
+
+    if (m.curSps < m.targetSps) m.curSps = min(m.targetSps, m.curSps + m.accel * dt);
+    else                        m.curSps = m.targetSps;
+
+    m.speed = (uint32_t)(1000000.0f / m.curSps);
+}
+
+void hardStop(StepperState& m) {
+    m.running   = false;
+    m.curSps    = 0.0f;
+    m.targetSps = 0.0f;
 }
 
 // ======================== COMMAND PARSER ========================
@@ -140,7 +179,7 @@ void processCommand(const char* cmd) {
     if (cmd[0] == 'M' && cmd[1] == '0') {
         int axis = extractParam(cmd, 'A', 0);
         if (axis >= 1 && axis <= 3) {
-            motors[axis - 1].running = false;
+            hardStop(motors[axis - 1]);
             Serial.print("Stopped axis "); Serial.println(axis);
         }
         return;
@@ -154,22 +193,29 @@ void processCommand(const char* cmd) {
 
         int idx = axis - 1;  // Array index (0-based)
 
-        // Convert speed (steps/sec) to step delay in microseconds
-        // e.g. Speed 500 = 2000µs delay (matches RAMPS_test.ino)
+        // S is the target speed in steps/s; a ramped axis gets there at its
+        // accel, the others jump straight to it.
+        StepperState& m = motors[idx];
         if (speed <= 0) {
-            motors[idx].running = false;
+            hardStop(m);
             return;
         }
 
-        const bool wasRunning = motors[idx].running;
-        motors[idx].speed = 1000000UL / (unsigned long)speed;
-        motors[idx].direction = dir;
-        motors[idx].running = true;
-        motors[idx].lastCmdMs = millis();   // feed the dead-man watchdog
-        if (!wasRunning) motors[idx].lastStepTime = micros();
+        const uint8_t newDir = dir ? 1 : 0;
+        // A direction change while moving restarts the axis from standstill
+        const bool wasRunning = m.running && (m.direction == newDir);
+        m.targetSps = (float)speed;
+        m.lastCmdMs = millis();   // feed the dead-man watchdog
 
-        // Set direction pin
-        digitalWrite(motors[idx].dirPin, dir ? HIGH : LOW);
+        if (!wasRunning) {
+            // DIR first, then begin at a speed the motor can pull in
+            m.direction = newDir;
+            digitalWrite(m.dirPin, m.direction ? HIGH : LOW);
+            m.curSps = (m.accel > 0.0f) ? min(m.targetSps, START_SPS) : m.targetSps;
+            m.speed  = (uint32_t)(1000000.0f / m.curSps);
+            m.running = true;
+            m.lastStepTime = micros();
+        }
 
         if (!wasRunning) {   // repeats arrive every 100 ms: only log starts
             Serial.print("M"); Serial.print(axis);
@@ -182,7 +228,7 @@ void processCommand(const char* cmd) {
 // ======================== EMERGENCY STOP ========================
 void emergencyStop() {
     for (int i = 0; i < 3; i++) {
-        motors[i].running = false;
+        hardStop(motors[i]);   // no ramp: stop now
         // Optionally disable drivers for immediate coast-down:
         // digitalWrite(motors[i].enPin, HIGH);  // HIGH = disabled
     }

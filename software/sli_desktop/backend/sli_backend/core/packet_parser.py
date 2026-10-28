@@ -11,7 +11,8 @@ import time
 import logging
 from typing import Optional
 
-from ..api.models import TelemetryFrame, DebugEntry, DebugReport
+from ..api.models import TelemetryFrame, DebugEntry, DebugReport, SafetyStatus
+from .load_chart import ChartReadback
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +28,41 @@ class PacketParser:
         self._on_telemetry = None
         self._on_debug = None
         self._on_ack = None
+        self._on_safety = None
+        self._on_chart = None
+        self._chart = ChartReadback()
 
     def set_callbacks(
         self,
         on_telemetry=None,
         on_debug=None,
         on_ack=None,
+        on_safety=None,
+        on_chart=None,
     ) -> None:
         """Register callbacks invoked when packets are fully parsed."""
         self._on_telemetry = on_telemetry
         self._on_debug = on_debug
         self._on_ack = on_ack
+        self._on_safety = on_safety
+        self._on_chart = on_chart
+
+    @staticmethod
+    def parse_safety(line: str) -> Optional[SafetyStatus]:
+        """$S,state,pct,capKg,zone,bypassLeftS,blockedHex,chartName[,mode] (chart names never
+        contain commas; firmware before SLI OFF sends no mode: then it is ARMED or BYPASS)."""
+        parts = line.strip().split(",")
+        if len(parts) not in (8, 9):
+            return None
+        try:
+            left = int(parts[5])
+            mode = parts[8] if len(parts) == 9 else ("BYPASS" if left > 0 else "ARMED")
+            return SafetyStatus(state=parts[1], pct=float(parts[2]), capKg=float(parts[3]),
+                                zone=int(parts[4]), bypassLeftS=left,
+                                blocked=int(parts[6], 16), chart=parts[7], mode=mode,
+                                timestamp=time.time())
+        except ValueError:
+            return None
 
     def parse_line(self, line: str) -> None:
         """
@@ -58,6 +83,16 @@ class PacketParser:
         elif line.startswith("$ACK,"):
             if self._on_ack:
                 self._on_ack(line)
+
+        elif line.startswith("$S,"):
+            status = self.parse_safety(line)
+            if status and self._on_safety:
+                self._on_safety(status)
+
+        elif line.startswith("$LC,"):
+            chart = self._chart.feed(line)
+            if chart is not None and self._on_chart:
+                self._on_chart(chart)
 
         else:
             # Unrecognized line — log for visibility but don't crash

@@ -6,7 +6,7 @@
 //  >= 1 s on a noise-hung transfer in this ESP32 core.
 //
 //    Accelerometer: +/-8 g     Gyroscope: +/-500 deg/s
-//    DLPF: 10 Hz (cuts stepper vibration before the complementary filter)
+//    DLPF: 5 Hz (cuts stepper vibration before the complementary filter)
 //
 //  Roll/pitch come from a complementary filter (gyro integration + accel tilt).
 // ============================================================
@@ -15,6 +15,14 @@
 
 #include "config.h"
 #include "soft_i2c.h"
+
+/** Wrap an angle into (-180, 180]. Roll from atan2 jumps +180 <-> -180, so any
+ *  blend or difference of angles must go through this. */
+inline float wrapDeg180(float a) {
+    while (a > 180.0f)   a -= 360.0f;
+    while (a <= -180.0f) a += 360.0f;
+    return a;
+}
 
 class MPU6050Driver {
 public:
@@ -69,6 +77,13 @@ private:
     uint32_t _reconnects = 0;     // re-inits after dropouts
     uint32_t _rejected   = 0;     // implausible (corrupted) samples skipped
 
+    // Gyro step gate (raw deg/s of the last accepted sample)
+    static constexpr float   GYRO_STEP_MAX    = 100.0f;   // deg/s change per sample
+    static constexpr uint8_t GYRO_STEP_RESYNC = 5;        // consistent samples -> accept
+    float   _prevGx = 0.0f, _prevGy = 0.0f, _prevGz = 0.0f;
+    bool    _hasPrevGyro = false;
+    uint8_t _gyroStepRun = 0;
+
     // Non-blocking gyro calibration state
     uint16_t _calTarget = 0, _calCount = 0;
     float    _calSum[3] = {0, 0, 0};
@@ -77,10 +92,11 @@ private:
 
     void finishCalibration(float sx, float sy, float sz, uint16_t n, float ax, float ay, float az);
 
-    // Complementary filter weight. 0.98 @ 100 Hz ~ 0.5 s time constant: the angle
-    // settles within about half a second after the boom stops. (0.995 / 5 Hz was
-    // used while bus noise got through; corrupted samples are now rejected.)
-    static constexpr float ALPHA = 0.98f;
+    // Complementary filter weight. tau = dt * a / (1 - a): 0.99 @ 100 Hz ~ 1 s.
+    // Halves the accelerometer jitter (stepper vibration) vs 0.98 (0.5 s); the
+    // cost is ~1 s for the angle to settle after the boom stops. Motion itself
+    // is tracked by the gyro without that lag.
+    static constexpr float ALPHA = 0.99f;
 
     bool configure();
     /** Read accel + gyro (raw sensor units -> m/s^2, deg/s without offsets). */

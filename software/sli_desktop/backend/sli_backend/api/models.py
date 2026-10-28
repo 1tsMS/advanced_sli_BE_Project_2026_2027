@@ -50,16 +50,45 @@ class ConnectionRequest(BaseModel):
     baudRate: int = 115200
 
 
-class LoadChartEntry(BaseModel):
-    """Single load chart row."""
-    angle:        float   # boom angle (degrees)
-    extensionMM:  float   # telescope extension (mm)
-    limitKg:      float   # safe load limit (kg)
+class LoadZone(BaseModel):
+    """Swing zone: capacity x factor while the swing angle is in [fromDeg, toDeg) (wraps 360)."""
+    fromDeg: float
+    toDeg:   float
+    factor:  float
 
 
-class LoadChartUpload(BaseModel):
-    """Full load chart to upload to ESP32."""
-    entries: List[LoadChartEntry]
+class LoadChartProfile(BaseModel):
+    """
+    One load chart profile, stored as JSON on the PC and uploaded to the ESP32.
+    Rows of capacityKg follow anglesDeg, columns follow extensionsMM.
+    Limits mirror the firmware (load_chart.h / lc_validate): see core/load_chart.py.
+    """
+    name:         str
+    description:  str = ""
+    anglesDeg:    List[float]
+    extensionsMM: List[float]
+    capacityKg:   List[List[float]]
+    zones:        List[LoadZone] = []
+    warnPct:      float = 90.0
+    cutPct:       float = 100.0
+    updated:      Optional[str] = None     # ISO time, set by the backend on save
+
+
+class SafetyStatus(BaseModel):
+    """Parsed $S line: the ESP32's SLI state (5 Hz + on every change)."""
+    state:       str = "FAULT"   # OK | WARN | CUT | FAULT | ESTOP
+    pct:         float = 0.0
+    capKg:       float = 0.0
+    zone:        int = -1
+    bypassLeftS: int = 0
+    blocked:     int = 0         # bit (axis-1)*2 + dir set = that motion is cut
+    chart:       str = "NONE"
+    mode:        str = "ARMED"   # ARMED | BYPASS | OFF (state/blocked are enforced only when ARMED)
+    timestamp:   float = 0.0
+
+
+class BypassRequest(BaseModel):
+    seconds: int
 
 
 class RecordingState(BaseModel):

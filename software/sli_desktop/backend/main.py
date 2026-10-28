@@ -27,14 +27,16 @@ from sli_backend.core.serial_manager import SerialManager
 from sli_backend.core.packet_parser import PacketParser
 from sli_backend.core.command_router import CommandRouter
 from sli_backend.core.session_logger import SessionLogger
-from sli_backend.api.models import TelemetryFrame, DebugReport
+from sli_backend.api.models import TelemetryFrame, DebugReport, SafetyStatus
 from sli_backend.api.ws_endpoint import (
     telemetry_websocket_endpoint,
     broadcast_telemetry,
     broadcast_debug,
     broadcast_ack,
+    broadcast_safety,
+    broadcast_chart,
 )
-from sli_backend.api.rest_endpoints import router as rest_router, init_endpoints
+from sli_backend.api.rest_endpoints import router as rest_router, init_endpoints, set_safety_status
 
 # ======================== LOGGING ========================
 logging.basicConfig(
@@ -88,6 +90,8 @@ async def startup() -> None:
         on_telemetry=_on_telemetry,
         on_debug=_on_debug,
         on_ack=_on_ack,
+        on_safety=_on_safety,
+        on_chart=_on_chart,
     )
 
     # Launch background packet processing loop
@@ -158,6 +162,17 @@ def _on_debug(report: DebugReport) -> None:
 def _on_ack(ack_line: str) -> None:
     """Called by PacketParser when a $ACK line is received."""
     asyncio.create_task(broadcast_ack(ack_line))
+
+
+def _on_safety(status: SafetyStatus) -> None:
+    """Called by PacketParser for every $S line (SLI state)."""
+    set_safety_status(status)          # so GET /api/sli answers before the next $S
+    asyncio.create_task(broadcast_safety(status))
+
+
+def _on_chart(chart: dict) -> None:
+    """Called by PacketParser when an LC GET readback is complete."""
+    asyncio.create_task(broadcast_chart(chart))
 
 
 # ======================== ENTRY POINT ========================

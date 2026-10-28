@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { TelemetryFrame, DebugReport, RecordingState } from "../types";
+import type { TelemetryFrame, DebugReport, RecordingState, SafetyStatus, LoadChartProfile } from "../types";
 
 const WS_URL = "ws://localhost:8000/ws/telemetry";
 const STATUS_URL = "http://localhost:8000/api/status";
@@ -17,6 +17,15 @@ interface UseTelemetryReturn {
   recording: RecordingState & { receivedAt: number };
   /** Re-read /api/status now (e.g. right after toggling recording). */
   refreshStatus: () => void;
+  /** Latest $S from the ESP32 (null until one arrives). receivedAt drives the stale check. */
+  safety: (SafetyStatus & { receivedAt: number }) | null;
+  /** Chart read back from the ESP32 (LC GET): undefined = not asked, null = the ESP32 has none. */
+  craneChart: { chart: LoadChartProfile | null; receivedAt: number } | undefined;
+  /** Last load chart COMMIT result ($ACK,LC,COMMITTED / ERR). seq counts up, so a repeat of the
+   *  same text (same chart uploaded twice) is still a new result. */
+  lcResult: { text: string; seq: number };
+  /** Last motion the SLI refused or cut ($ACK,SLI,REFUSED / CUT,...); seq counts up per event. */
+  sliBlock: { text: string; seq: number };
 }
 
 const NOT_RECORDING: RecordingState = { recording: false, file: null, rows: 0, elapsedSec: 0 };
@@ -35,6 +44,10 @@ export function useTelemetry(): UseTelemetryReturn {
   const [recording, setRecording] = useState<RecordingState & { receivedAt: number }>(
     () => ({ ...NOT_RECORDING, receivedAt: 0 })
   );
+  const [safety, setSafety] = useState<UseTelemetryReturn["safety"]>(null);
+  const [craneChart, setCraneChart] = useState<UseTelemetryReturn["craneChart"]>(undefined);
+  const [lcResult, setLcResult] = useState<UseTelemetryReturn["lcResult"]>({ text: "", seq: 0 });
+  const [sliBlock, setSliBlock] = useState<UseTelemetryReturn["sliBlock"]>({ text: "", seq: 0 });
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,9 +96,20 @@ export function useTelemetry(): UseTelemetryReturn {
           lastTelemetryTime.current = Date.now();
           setEspConnected(true);
         } else if (msg.type === "ack") {
-          setLastAck(msg.data as string);
+          const ack = msg.data as string;
+          setLastAck(ack);
+          if (ack.startsWith("$ACK,LC,COMMITTED") || ack.startsWith("$ACK,LC,ERR")) {
+            setLcResult(r => ({ text: ack, seq: r.seq + 1 }));
+          } else if (ack.startsWith("$ACK,SLI,REFUSED") || ack.startsWith("$ACK,SLI,CUT")) {
+            setSliBlock(r => ({ text: ack, seq: r.seq + 1 }));
+          }
           lastTelemetryTime.current = Date.now();
           setEspConnected(true);
+        } else if (msg.type === "safety") {
+          setSafety({ ...(msg as SafetyStatus), receivedAt: Date.now() });
+        } else if (msg.type === "chart") {
+          const c = msg.chart as Omit<LoadChartProfile, "description"> | null;
+          setCraneChart({ chart: c ? { description: "", ...c } : null, receivedAt: Date.now() });
         }
       } catch {
         // Ignore malformed messages
@@ -119,5 +143,6 @@ export function useTelemetry(): UseTelemetryReturn {
     };
   }, [connect, checkStatus]);
 
-  return { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus: checkStatus };
+  return { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus: checkStatus,
+           safety, craneChart, lcResult, sliBlock };
 }

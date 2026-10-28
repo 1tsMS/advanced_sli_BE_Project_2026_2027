@@ -46,7 +46,8 @@
 // ======================== N20 WINCH VIA DRV8833 ========================
 #define DRV_AIN1  13   // PWM / direction
 #define DRV_AIN2  14   // PWM / direction
-#define DRV_STBY  12   // Standby (tie to 3.3V if always-on)
+// DRV8833 EEP (nSLEEP) is soldered to 3.3 V on the board: always awake, no GPIO.
+// (GPIO12 is left unused: it is a boot strapping pin and must not be pulled high at reset.)
 
 // ======================== N20 QUADRATURE ENCODER ========================
 #define N20_ENC_A  18  // Interrupt-capable

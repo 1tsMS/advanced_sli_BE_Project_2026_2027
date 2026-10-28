@@ -53,11 +53,9 @@ void N20Encoder::begin() {
     _count  = 0;
     _ready  = true;
 
-    // DRV8833 motor driver pins
+    // DRV8833 motor driver pins (EEP/nSLEEP is hard-wired to 3.3 V, see config.h)
     pinMode(DRV_AIN1, OUTPUT);
     pinMode(DRV_AIN2, OUTPUT);
-    pinMode(DRV_STBY, OUTPUT);
-    digitalWrite(DRV_STBY, HIGH);   // driver awake
     stopMotor();
 }
 

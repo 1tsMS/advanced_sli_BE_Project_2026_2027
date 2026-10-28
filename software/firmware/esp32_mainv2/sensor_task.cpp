@@ -18,6 +18,10 @@ static N20Encoder*    _winchEnc  = nullptr;
 // Global sensor data — declared in esp32_main.ino
 extern SensorData sensorData;
 
+// Load cell counts as failed when no conversion arrived for this long
+// (HX711 converts every 100 ms at 10 SPS, 12.5 ms at 80 SPS)
+static const uint32_t LOAD_STALE_MS = 500;
+
 // Calibrated encoder axes.  All three now use ENC_LINEAR (multi-turn
 // counting) because every AS5600 magnet sits on the motor shaft behind
 // a gear reduction, not on the output shaft.
@@ -518,8 +522,10 @@ void sensorTask_hwBus(void* pvParameters) {
         const float mpuPitch = imuOK ? _imu->getPitch() : 0.0f;
         const float boomBase = (_boomSource == 1) ? mpuPitch : mpuRoll;
         const float tiltBase = (_tiltSource == 1) ? mpuPitch : mpuRoll;
-        const float imuBoom  = (boomBase - _boomAngleOffset) * (_boomInvert ? -1.0f : 1.0f);
-        const float imuTilt  = (tiltBase - _tiltAngleOffset) * (_tiltInvert ? -1.0f : 1.0f);
+        // Wrap after removing the zero: an offset near 180 (roll source, sensor
+        // upside down) would otherwise read -359 one sample and +1 the next
+        const float imuBoom  = wrapDeg180(boomBase - _boomAngleOffset) * (_boomInvert ? -1.0f : 1.0f);
+        const float imuTilt  = wrapDeg180(tiltBase - _tiltAngleOffset) * (_tiltInvert ? -1.0f : 1.0f);
 
         const float workMs = (micros() - t0) / 1000.0f;
         taskENTER_CRITICAL(&_hwMux);
@@ -617,17 +623,22 @@ void sensorTask(void* pvParameters) {
         stageEnd(STAGE_CAL, st);
 
         // ---- IMU angles from the bus task ----
-        const bool  imuOK   = hw.imuOK;
-        const float imuBoom = hw.imuBoom;
-        const float imuTilt = hw.imuTilt;
+        // While the IMU is re-initialising (imuOK false) the bus task reports
+        // 0 - offset, so hold the last good angles instead of passing that on.
+        // sensorsOK goes false meanwhile, so the hold is never silent.
+        static float heldImuBoom = 0.0f, heldImuTilt = 0.0f;
+        const bool imuOK = hw.imuOK;
+        if (imuOK) { heldImuBoom = hw.imuBoom; heldImuTilt = hw.imuTilt; }
+        const float imuBoom = heldImuBoom;
+        const float imuTilt = heldImuTilt;
 
         // Boom angle: IMU by default. The encoder is only used when
         // BOOM_ANGLE_FROM_ENCODER is enabled (see config.h: leadscrew is non-linear).
+        // (The old fallback to the uncalibrated boom encoder on an IMU dropout
+        // made the angle jump for the ~0.5 s re-init.)
         const bool boomEncOK = BOOM_ANGLE_FROM_ENCODER && _boomCalibrated && _enc[ENC_BOOM] &&
                                _enc[ENC_BOOM]->isConnected() && _axis[ENC_BOOM].hasSample();
-        const float boom = boomEncOK ? _axis[ENC_BOOM].value()
-                         : imuOK     ? imuBoom
-                         :             _axis[ENC_BOOM].value();
+        const float boom = boomEncOK ? _axis[ENC_BOOM].value() : imuBoom;
 
         stageEnd(STAGE_IMU, st);
 
@@ -715,29 +726,17 @@ void sensorTask(void* pvParameters) {
             sensorData.fsr[2] = fsrVals[2];
             sensorData.fsr[3] = fsrVals[3];
 
-            // Phase 3: these will be computed by SafetyTask
-            sensorData.safeLoadLimit = 5.0f;   // Default 5kg crane limit
-
-            // Load sanity check: on a 5kg crane, anything >10kg is uncalibrated raw data or overload error
-            const bool loadValid = (weight >= -0.5f && weight <= MAX_VALID_LOAD_KG);
-            if (loadValid) {
-                sensorData.loadPercent = (sensorData.safeLoadLimit > 0)
-                    ? (sensorData.actualLoadKg / sensorData.safeLoadLimit) * 100.0f
-                    : 0.0f;
-                sensorData.alarmLevel = (sensorData.loadPercent >= ALARM_CRITICAL_PERCENT) ? 2
-                                      : (sensorData.loadPercent >= ALARM_WARN_PERCENT)     ? 1 : 0;
-            } else {
-                sensorData.loadPercent = 999.0f;  // Sentinel error value
-                sensorData.alarmLevel  = 2;
-            }
+            // safeLoadLimit / loadPercent / alarmLevel belong to SafetyTask
 
             // System health check (cached flags only: no bus traffic here)
             sensorData.sensorsOK = (
                 (_enc[ENC_SWING] ? _enc[ENC_SWING]->isConnected() : true) &&
                 (_enc[ENC_BOOM]  ? _enc[ENC_BOOM]->isConnected()  : true) &&
                 (_enc[ENC_TELE]  ? _enc[ENC_TELE]->isConnected()  : true) &&
-                (_imu            ? _imu->isConnected()            : true) &&
-                (_loadCell       ? _loadCell->isConnected()       : true)
+                (_imu            ? imuOK                          : true) &&
+                // A dead HX711 never clears isConnected(): it just stops converting
+                // and getWeight() keeps returning the last value. Stale = fault.
+                (_loadCell       ? (_loadCell->isConnected() && _loadCell->isFresh(LOAD_STALE_MS)) : true)
             );
 
             // Diagnostics for DBG

@@ -20,7 +20,7 @@ static const float G_MS2            = 9.80665f;
 bool MPU6050Driver::configure() {
     return _bus->writeReg(_addr, REG_PWR_MGMT_1,   0x01) &&   // wake, clock = PLL gyro X
            _bus->writeReg(_addr, REG_SMPLRT_DIV,   0x00) &&
-           _bus->writeReg(_addr, REG_CONFIG,       0x05) &&   // DLPF 10 Hz
+           _bus->writeReg(_addr, REG_CONFIG,       0x06) &&   // DLPF 5 Hz (accel ~19 ms delay)
            _bus->writeReg(_addr, REG_GYRO_CONFIG,  0x08) &&   // +/-500 deg/s
            _bus->writeReg(_addr, REG_ACCEL_CONFIG, 0x10);     // +/-8 g
 }
@@ -93,6 +93,20 @@ void MPU6050Driver::update() {
         return;
     }
 
+    // Step gate: behind the 5 Hz DLPF the gyro cannot change by more than
+    // GYRO_STEP_MAX between 10 ms samples on a slow crane. A corrupted gyro byte
+    // that still lands under 300 deg/s would otherwise be integrated into a
+    // fake swing of tens of degrees. A new level that persists is accepted.
+    if (_hasPrevGyro &&
+        (fabsf(gx - _prevGx) > GYRO_STEP_MAX || fabsf(gy - _prevGy) > GYRO_STEP_MAX ||
+         fabsf(gz - _prevGz) > GYRO_STEP_MAX)) {
+        _rejected++;
+        if (++_gyroStepRun < GYRO_STEP_RESYNC) return;
+    }
+    _gyroStepRun = 0;
+    _prevGx = gx; _prevGy = gy; _prevGz = gz;
+    _hasPrevGyro = true;
+
     // Non-blocking gyro calibration in progress: collect instead of filtering
     if (_calTarget) {
         _calSum[0] += gx; _calSum[1] += gy; _calSum[2] += gz;
@@ -120,9 +134,14 @@ void MPU6050Driver::update() {
     const float accelRoll  = atan2f(_accelY, _accelZ) * 180.0f / PI;
     const float accelPitch = atan2f(-_accelX, sqrtf(_accelY * _accelY + _accelZ * _accelZ)) * 180.0f / PI;
 
-    // Complementary filter
-    _roll  = ALPHA * (_roll  + _gyroX * dt) + (1.0f - ALPHA) * accelRoll;
-    _pitch = ALPHA * (_pitch + _gyroY * dt) + (1.0f - ALPHA) * accelPitch;
+    // Complementary filter, wrap-safe: pull the gyro prediction toward the
+    // accel angle by the SHORTEST way round. A plain weighted average of +179
+    // and -179 gives ~+172 instead of 180, so a sensor sitting near +/-180 roll
+    // (Z axis pointing down) swung wildly across the whole range.
+    const float rollPred  = wrapDeg180(_roll  + _gyroX * dt);
+    const float pitchPred = _pitch + _gyroY * dt;
+    _roll  = wrapDeg180(rollPred + (1.0f - ALPHA) * wrapDeg180(accelRoll - rollPred));
+    _pitch = pitchPred + (1.0f - ALPHA) * (accelPitch - pitchPred);
 }
 
 void MPU6050Driver::finishCalibration(float sx, float sy, float sz, uint16_t n,
