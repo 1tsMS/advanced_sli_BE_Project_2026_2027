@@ -13,7 +13,7 @@
 | 1 | Mohammed Salah Altaf Chogle | 41 | Automation & Robotics | 2023.mohammed.chogle@ves.ac.in |
 | 2 | Ali Kalsekar | 53 | Automation & Robotics | d2024.ali.kalsekar@ves.ac.in |
 | 3 | Aayush Kadam | 51 | Automation & Robotics | 2023.aayush.kadam@ves.ac.in |
-| 4 |  |  |  |  |
+
 
 ---
 
