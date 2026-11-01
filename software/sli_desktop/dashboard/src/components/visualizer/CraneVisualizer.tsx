@@ -68,7 +68,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     // Telemetry values
     const boomAngle = Math.max(0, Math.min(85, frame?.boomAngle ?? 0)); // no data: draw it lowered, never a made-up pose
     const extMM = Math.max(0, frame?.extensionMM ?? 0);
-    const ropeLength = Math.max(100, frame?.ropeLength ?? 0);
+    // Hanging length (load-cell end to hook tip); older firmware has no hookDrop
+    const ropeLength = Math.max(100, frame?.hookDrop || frame?.ropeLength || 0);
     const alarmLevel = frame?.alarmLevel ?? 0;
     const actualLoad = frame?.actualLoad ?? 0;
     const safeLimit = frame?.safeLoadLimit ?? 5.0;

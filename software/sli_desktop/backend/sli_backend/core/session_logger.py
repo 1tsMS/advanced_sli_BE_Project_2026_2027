@@ -26,7 +26,8 @@ CSV_HEADER = [
     "swingAngle", "ropeLength",
     "fsr1", "fsr2", "fsr3", "fsr4",
     "imuRoll", "imuPitch",
-    "safeLoadLimit", "loadPercent", "alarmLevel"
+    "safeLoadLimit", "loadPercent", "alarmLevel",
+    "ropeTotal", "hookDrop",
 ]
 
 
@@ -79,6 +80,8 @@ class SessionLogger:
                 "safeLoadLimit": round(frame.safeLoadLimit, 2),
                 "loadPercent":  round(frame.loadPercent, 2),
                 "alarmLevel":   frame.alarmLevel,
+                "ropeTotal":    round(frame.ropeTotal, 1),
+                "hookDrop":     round(frame.hookDrop, 1),
             })
             self._row_count += 1
             # Flush every 50 rows to avoid data loss on crash

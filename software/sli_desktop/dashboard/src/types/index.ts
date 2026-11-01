@@ -5,7 +5,9 @@ export interface TelemetryFrame {
   loadCellRaw?: number;
   actualLoad: number;
   swingAngle: number;
-  ropeLength: number;
+  ropeLength: number;   // calibrated: load-cell end to the knot
+  ropeTotal: number;    // ropeLength + fixed path + knot-to-hook (0 = old firmware)
+  hookDrop: number;     // load-cell end to hook tip (0 = old firmware)
   fsr: [number, number, number, number];
   imuRoll: number;
   imuPitch: number;

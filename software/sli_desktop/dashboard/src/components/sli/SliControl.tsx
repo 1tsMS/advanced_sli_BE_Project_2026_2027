@@ -39,6 +39,8 @@ interface SliControlProps {
 export function SliControl({ safety }: SliControlProps) {
   const [confirming, setConfirming] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Mode we asked for: if the ESP32 doesn't report it soon, say so (old firmware ignores SLI OFF)
+  const [expect, setExpect] = useState<{ mode: string; at: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const now = useNow();
 
@@ -62,10 +64,15 @@ export function SliControl({ safety }: SliControlProps) {
   const mode = s ? s.mode : "ARMED";
   const bypassLeft = s ? s.bypassLeftS : 0;
 
-  const run = async (path: string, body?: object) => {
-    setErr(await post(path, body));
+  const run = async (path: string, body?: object, wantMode?: string) => {
     setConfirming(false);
+    const e = await post(path, body);
+    setErr(e);
+    setExpect(!e && wantMode ? { mode: wantMode, at: Date.now() } : null);
   };
+  // Checked 3-20 s after the click only: later the mode may change on its own (bypass lapses)
+  const sinceClick = expect ? now - expect.at : 0;
+  const noEffect = !!expect && !!s && s.mode !== expect.mode && sinceClick > 3000 && sinceClick < 20000;
 
   // When not armed the chip says so: the state is only what the SLI WOULD do
   const chipClass = !state ? "stale" : state === "ESTOP" ? "estop" : mode !== "ARMED" ? "disarmed" : state.toLowerCase();
@@ -85,11 +92,11 @@ export function SliControl({ safety }: SliControlProps) {
           <RotateCcw size={12} /> RESET
         </button>
       ) : mode === "OFF" ? (
-        <button className="sli-btn disarmed" onClick={() => run("/sli/arm")} title="Turn the SLI back on">
+        <button className="sli-btn disarmed" onClick={() => run("/sli/arm", undefined, "ARMED")} title="Turn the SLI back on">
           <ShieldOff size={12} /> SLI OFF · turn on
         </button>
       ) : mode === "BYPASS" ? (
-        <button className="sli-btn disarmed" onClick={() => run("/sli/arm")} title="Re-arm the SLI now">
+        <button className="sli-btn disarmed" onClick={() => run("/sli/arm", undefined, "ARMED")} title="Re-arm the SLI now">
           <ShieldOff size={12} /> BYPASS <span className="sli-left">{fmtLeft(bypassLeft)}</span>
         </button>
       ) : (
@@ -110,20 +117,25 @@ export function SliControl({ safety }: SliControlProps) {
           <div className="sli-pop-k">Bypass for a while (re-arms by itself)</div>
           <div className="sli-pop-row">
             {BYPASS_OPTIONS.map(o => (
-              <button key={o.s} className="sli-pop-opt" onClick={() => run("/sli/bypass", { seconds: o.s })}>
+              <button key={o.s} className="sli-pop-opt" onClick={() => run("/sli/bypass", { seconds: o.s }, "BYPASS")}>
                 {o.label}
               </button>
             ))}
           </div>
           <div className="sli-pop-k">Or turn it off (until you turn it on, or the ESP32 reboots)</div>
           <div className="sli-pop-row">
-            <button className="sli-pop-opt off" onClick={() => run("/sli/off")}>Turn SLI off</button>
+            <button className="sli-pop-opt off" onClick={() => run("/sli/off", undefined, "OFF")}>Turn SLI off</button>
             <button className="btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
           </div>
         </div>
       )}
 
       {err && <span className="rec-err" title={err}>{err}</span>}
+      {noEffect && !err && (
+        <span className="rec-err" title="The command was sent but the ESP32 still reports the old mode. Firmware without SLI OFF / mode reporting ignores it.">
+          ESP32 still {s!.mode}: flash latest esp32_mainv2
+        </span>
+      )}
     </div>
   );
 }

@@ -1,0 +1,53 @@
+{
+  "name": "Lift limit",
+  "description": "Measured stall limits 2026-10-29: 600 g full extension to the top, 800 g retracted to ~20 deg",
+  "anglesDeg": [
+    0.0,
+    10.0,
+    20.0,
+    30.0,
+    40.0,
+    50.0
+  ],
+  "extensionsMM": [
+    22.4,
+    45.0,
+    67.4
+  ],
+  "capacityKg": [
+    [
+      0.8,
+      0.7,
+      0.6
+    ],
+    [
+      0.8,
+      0.7,
+      0.6
+    ],
+    [
+      0.8,
+      0.7,
+      0.6
+    ],
+    [
+      0.6,
+      0.6,
+      0.6
+    ],
+    [
+      0.6,
+      0.6,
+      0.6
+    ],
+    [
+      0.6,
+      0.6,
+      0.6
+    ]
+  ],
+  "zones": [],
+  "warnPct": 90.0,
+  "cutPct": 100.0,
+  "updated": "2026-10-29T09:30:44"
+}

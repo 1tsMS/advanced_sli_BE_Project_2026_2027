@@ -6,7 +6,8 @@
 //  Packet format:
 //  $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
 //     ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-//     safeLimit,loadPct,alarmLvl\n
+//     safeLimit,loadPct,alarmLvl,ropeTotalMM,hookDropMM\n
+//  (the last two were appended later, so older parsers that read 15 fields still line up)
 // ============================================================
 #ifndef TELEMETRY_FMT_H
 #define TELEMETRY_FMT_H

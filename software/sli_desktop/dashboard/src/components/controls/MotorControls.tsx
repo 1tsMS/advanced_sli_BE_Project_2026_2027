@@ -69,8 +69,8 @@ export function MotorControls({ speed, onSpeedChange, safety }: MotorControlsPro
       <div className="axes-grid">
         {AXES.map(ax => (
           <div className="axis-card" key={ax.id}>
-            <div className="axis-name">
-              {ax.name}
+            <div className="axis-name" title={ax.id === 4 ? "Runs at a fixed 90 % power; the speed slider doesn't apply" : undefined}>
+              {ax.name}{ax.id === 4 && <span className="axis-id">90 %</span>}
               <span className="axis-id">M{ax.id}</span>
             </div>
             <div className="axis-btns">

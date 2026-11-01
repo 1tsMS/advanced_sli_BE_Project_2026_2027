@@ -24,11 +24,10 @@ static AS5600Driver* _boomEnc   = nullptr;
 // Global sensor data — declared in esp32_main.ino
 extern SensorData sensorData;
 
-/** Map a G-code speed (0..MOTOR_SPEED_MAX) onto the winch's 0..255 PWM range.
- *  (A plain (uint8_t) cast wraps: S1000 became 232 and S256 became 0.) */
-static inline uint8_t speedToPwm(uint16_t speed) {
-    if (speed > MOTOR_SPEED_MAX) speed = MOTOR_SPEED_MAX;
-    return (uint8_t)(((uint32_t)speed * 255UL) / MOTOR_SPEED_MAX);
+/** The winch ignores the speed value: any S > 0 runs it at WINCH_PWM (config.h).
+ *  Scaled PWM was too weak to turn the geared N20 + drum at low slider settings. */
+static inline uint8_t winchPwm(uint16_t speed) {
+    return speed > 0 ? (uint8_t)WINCH_PWM : 0;
 }
 
 /** Hand a calibration step to SensorTask (core 1, owner of the buses). */
@@ -182,7 +181,7 @@ void commandTask(void* pvParameters) {
                         if (cmd.motor.axis == 4) {
                             // Winch — handled directly by ESP32 DRV8833
                             if (_winch) {
-                                const uint8_t pwm = speedToPwm(cmd.motor.speed);
+                                const uint8_t pwm = winchPwm(cmd.motor.speed);
                                 _winch->setMotor(pwm, cmd.motor.direction);
                                 _winchActive    = (pwm > 0);
                                 _lastWinchCmdMs = millis();

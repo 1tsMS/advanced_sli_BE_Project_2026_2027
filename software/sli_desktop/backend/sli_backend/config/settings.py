@@ -25,7 +25,8 @@ TELEMETRY_FIELDS = [
     "swingAngle", "ropeLength",
     "fsr1", "fsr2", "fsr3", "fsr4",
     "imuRoll", "imuPitch",
-    "safeLoadLimit", "loadPercent", "alarmLevel"
+    "safeLoadLimit", "loadPercent", "alarmLevel",
+    "ropeTotal", "hookDrop",            # appended later; 15-field firmware leaves them 0
 ]
 
 # Session logging

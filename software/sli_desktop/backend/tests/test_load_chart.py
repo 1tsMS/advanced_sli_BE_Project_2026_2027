@@ -88,6 +88,20 @@ def test_parse_safety_line():
     assert PacketParser.parse_safety("$S,OK,x,0.5,-1,0,00,A") is None
 
 
+def test_telemetry_rope_fields_old_and_new():
+    got = []
+    p = PacketParser()
+    p.set_callbacks(on_telemetry=got.append)
+    base = "$T,10.00,30.0,0.50,0.50,90.00,120.0,1,2,3,4,10.00,0.50,0.60,83.3,0"
+    p.parse_line(base + ",455.0,210.0")             # new firmware: + ropeTotal, hookDrop
+    p.parse_line(base)                              # old firmware: 15 fields
+    assert len(got) == 2
+    assert got[0].ropeLength == 120.0 and got[0].ropeTotal == 455.0 and got[0].hookDrop == 210.0
+    assert got[1].ropeLength == 120.0 and got[1].ropeTotal == 0.0 and got[1].hookDrop == 0.0
+    p.parse_line(base + ",455.0")                   # 16 fields: neither format
+    assert len(got) == 2
+
+
 def test_chart_readback_assembles():
     got = []
     p = PacketParser()

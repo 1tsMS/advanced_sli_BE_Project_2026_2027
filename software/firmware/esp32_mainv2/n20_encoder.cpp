@@ -53,10 +53,13 @@ void N20Encoder::begin() {
     _count  = 0;
     _ready  = true;
 
-    // DRV8833 motor driver pins (EEP/nSLEEP is hard-wired to 3.3 V, see config.h)
+    // DRV8833: set the inputs to brake first, then wake the driver (EEP held low
+    // by its pull-down until now, so nothing moved during boot / flashing)
     pinMode(DRV_AIN1, OUTPUT);
     pinMode(DRV_AIN2, OUTPUT);
     stopMotor();
+    pinMode(DRV_SLEEP, OUTPUT);
+    digitalWrite(DRV_SLEEP, HIGH);
 }
 
 void N20Encoder::poll() {
@@ -75,6 +78,7 @@ void N20Encoder::poll() {
 
 void N20Encoder::setMotor(uint8_t speed, uint8_t dir) {
     if (speed == 0) { stopMotor(); return; }
+    if (WINCH_REVERSED) dir ^= 1;   // physical wiring is the other way round (config.h)
     if (dir == 0) {
         // Wind up: AIN1 = PWM, AIN2 = LOW
         analogWrite(DRV_AIN2, 0);

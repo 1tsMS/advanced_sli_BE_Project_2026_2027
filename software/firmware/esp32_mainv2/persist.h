@@ -39,7 +39,7 @@ struct PersistRotary {       // swing / boom encoder reference (sli_enc)
 // Position slots: 0 swing, 1 boom, 2 telescope, 3 rope
 void persist_setPosition(uint8_t slot, const PersistPos& p);
 void persist_setTele(float scale, bool inverted);
-void persist_setRope(float scale, bool inverted);
+void persist_setRope(float scale, bool inverted, float extRef);   // extRef NAN = not referenced
 void persist_setImu(const PersistImu& imu);
 void persist_setRotary(uint8_t idx, const PersistRotary& r, bool boomCalibrated);   // idx 0 swing, 1 boom
 void persist_setTareOffset(int32_t offset);

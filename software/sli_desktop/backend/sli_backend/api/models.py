@@ -17,7 +17,9 @@ class TelemetryFrame(BaseModel):
     measuredLoad:  float = 0.0   # kg (raw from load cell)
     actualLoad:    float = 0.0   # kg (angle-compensated, Phase 3)
     swingAngle:    float = 0.0   # degrees
-    ropeLength:    float = 0.0   # mm
+    ropeLength:    float = 0.0   # mm, calibrated: load-cell end to the knot
+    ropeTotal:     float = 0.0   # mm, ropeLength + fixed path + knot-to-hook (0 = old firmware)
+    hookDrop:      float = 0.0   # mm, load-cell end to hook tip (0 = old firmware)
     fsr:           List[int] = [0, 0, 0, 0]  # ADC 0-4095 per outrigger
     imuRoll:       float = 0.0   # degrees
     imuPitch:      float = 0.0   # degrees

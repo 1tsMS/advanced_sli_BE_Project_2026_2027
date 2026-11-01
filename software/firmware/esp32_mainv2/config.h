@@ -46,8 +46,18 @@
 // ======================== N20 WINCH VIA DRV8833 ========================
 #define DRV_AIN1  13   // PWM / direction
 #define DRV_AIN2  14   // PWM / direction
-// DRV8833 EEP (nSLEEP) is soldered to 3.3 V on the board: always awake, no GPIO.
-// (GPIO12 is left unused: it is a boot strapping pin and must not be pulled high at reset.)
+// Motor wired so that AIN1-PWM pays out instead of winding up: swap in software so
+// D0 stays "wind up" everywhere (dashboard, gamepad and the SLI's hoist cut rely on it).
+// Set to 0 if the motor wires are ever swapped instead.
+#define WINCH_REVERSED  1
+// Winch runs at a fixed duty, whatever speed the command carries (255 = 100 %).
+#define WINCH_PWM       230   // ~90 %
+// DRV8833 EEP (nSLEEP): GPIO4 with a 10k pull-down to GND. The ESP32 itself drives
+// GPIO14 at boot (a PWM burst) and leaves pins floating while flashing; with EEP tied
+// to 3.3 V that spun the winch and the rope encoder missed the turns. The pull-down
+// keeps the driver asleep (outputs off) until the firmware wakes it in N20Encoder::begin().
+// GPIO4 has no boot function; GPIO12 is a strapping pin and must stay low at reset.
+#define DRV_SLEEP  4
 
 // ======================== N20 QUADRATURE ENCODER ========================
 #define N20_ENC_A  18  // Interrupt-capable
@@ -74,6 +84,15 @@
 // Starting guess only (840 lines x 4, 20 mm drum). The real value is measured
 // with the rope ruler calibration (CAL6) and stored in flash.
 #define N20_COUNTS_PER_REV      3360
+
+// Rope geometry around the calibrated length. The rope calibration (CAL4 A4 / CAL6)
+// measures from the END OF THE LOAD CELL to the KNOT above the hook. Fixed parts
+// the encoder never sees (measured 2026-10-29):
+#define ROPE_FIXED_PATH_MM      245.0f   // 22.5 cm + 2 cm of rope before the load-cell end
+#define ROPE_KNOT_TO_HOOK_MM     90.0f   // knot to hook tip
+// -> ropeTotalMM = calibrated + 245 + 90      (all rope + hook)
+// -> hookDropMM  = calibrated + 90            (load-cell end to hook tip: the part that
+//                                              hangs and swings, i.e. the pendulum length)
 #define ROPE_DRUM_DIAMETER_MM   20.0f
 #define ROPE_MM_PER_COUNT_DEFAULT  ((PI * ROPE_DRUM_DIAMETER_MM) / N20_COUNTS_PER_REV)
 
@@ -115,7 +134,9 @@ struct SensorData {
 
     // Computed linear values
     float extensionMM;       // telescope linear extension
-    float ropeLengthMM;      // rope payed out from N20 encoder
+    float ropeLengthMM;      // calibrated rope: load-cell end to the knot (N20 encoder)
+    float ropeTotalMM;       // ropeLengthMM + fixed path + knot-to-hook (see ROPE_* above)
+    float hookDropMM;        // load-cell end to hook tip (pendulum length for sway)
 
     // Load
     float loadCellRaw;       // kg — HX711 reading (tare + scale), NOT angle-compensated
@@ -142,7 +163,7 @@ struct SensorData {
  */
 struct MotorCommand {
     uint8_t  axis;       // 1=Swing, 2=Lift, 3=Tele, 4=Winch, 0=StopAxis
-    uint16_t speed;      // 0–MOTOR_SPEED_MAX (steps/s; scaled to PWM for the winch)
+    uint16_t speed;      // 0–MOTOR_SPEED_MAX (steps/s; the winch only uses speed > 0, see WINCH_PWM)
     uint8_t  direction;  // 0 or 1
     uint8_t  stopAxis;   // which axis to stop (for M0 Ax commands)
     bool     isEstop;    // true → emergency stop ALL motors
@@ -162,7 +183,7 @@ enum CalCommand : uint8_t {
     CAL_AXIS_SCALE  = 8   // CAL8 A<1-3> S<units per encoder rev> [I<0|1>]: swing / boom / telescope ratio
 };
 
-// Highest speed accepted in an M-command (steps/s). The winch maps this range onto 0-255 PWM.
+// Highest speed accepted in an M-command (steps/s, steppers). The winch runs at WINCH_PWM.
 #define MOTOR_SPEED_MAX  2500
 
 // Dead-man timeout: a motor keeps running only while its M-command keeps being

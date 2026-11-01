@@ -70,12 +70,15 @@ All pins are defined in `config.h`.
 | I2C bus 2 SDA / SCL | 32 / 33 | telescope AS5600, 4.7k pull-ups |
 | HX711 DT / SCK | 17 / 16 | load cell on the boom tip |
 | FSR 1-4 | 34, 35, 36, 39 | outrigger force sensors, ADC1 (input-only pins) |
-| DRV8833 AIN1 / AIN2 | 13 / 14 | winch PWM; EEP (nSLEEP) is soldered to 3.3 V |
+| DRV8833 AIN1 / AIN2 | 13 / 14 | winch PWM |
+| DRV8833 EEP (nSLEEP) | 4 | 10k pull-down to GND: driver asleep during boot/flashing, woken by the firmware |
 | N20 encoder A / B | 18 / 19 | PCNT unit 0, 4x quadrature |
 | UART2 to Mega RX / TX | 23 / 27 | 9600 baud, Mega pins 18/19 |
 | USB serial | | 115200 baud to the PC |
 
 GPIO12 is deliberately unused: it is a boot strapping pin and must be low at reset.
+GPIO14 (AIN2) pulses during boot, which is why the DRV8833 is kept asleep until
+the firmware runs: with EEP tied high the winch spun while flashing.
 
 All AS5600 magnets sit on the back of the stepper motors, not on the output
 shafts, so every encoder counts motor turns (multi-turn) and is scaled to the
@@ -274,10 +277,15 @@ Weight = (raw - offset) / scale, with a ±20 g dead band around zero.
 
 ### 6.5 Winch (N20 + DRV8833)
 
-- `setMotor(pwm, dir)`: dir 0 winds up (AIN1 = PWM, AIN2 = 0), dir 1 pays out.
-  The command speed 0-2500 is mapped to PWM 0-255.
+- `setMotor(pwm, dir)`: dir 0 winds up, dir 1 pays out (`WINCH_REVERSED` swaps the
+  outputs because of how the motor is wired). Any speed > 0 runs at a fixed
+  `WINCH_PWM` (230/255, about 90 %); the dashboard speed slider is for the steppers.
 - `stopMotor()`: both inputs high = DRV8833 brake, so the drum holds.
-- Rope length comes from the PCNT count: rope mm = ref + sign × (count - zero) × mm-per-count.
+- Rope from the PCNT count: rope mm = ref + sign × (count - zero) × mm-per-count.
+  That is the drum side. The winch is fixed and the rope runs along the telescope,
+  so extending pulls rope over the tip: hanging length = rope - (extension - extRef),
+  where `extRef` is the extension recorded when the rope reference (`CAL4 A4`) was set.
+  Hook drop = hanging + 90 mm; total rope = rope + 245 + 90 mm (fixed by the drum).
 - Dead-man in CommandTask: no M4 for 400 ms = stop.
 
 ### 6.6 The SLI
@@ -377,7 +385,7 @@ button is held; that is the dead-man.
 
 | Prefix | Content |
 |---|---|
-| `$T` | telemetry, 50 Hz: boomAngle, extensionMM, measuredLoad, actualLoad, swingAngle, ropeLengthMM, fsr1-4, imuRoll (IMU boom angle), imuPitch (tilt), safeLoadLimit, loadPercent, alarmLevel |
+| `$T` | telemetry, 50 Hz: boomAngle, extensionMM, measuredLoad, actualLoad, swingAngle, ropeLengthMM (calibrated: load-cell end to knot), fsr1-4, imuRoll (IMU boom angle), imuPitch (tilt), safeLoadLimit, loadPercent, alarmLevel, ropeTotalMM (+245 +90 mm), hookDropMM (+90 mm: load-cell end to hook tip) |
 | `$S` | SLI status, 5 Hz + on change: state, pct, capKg, zone, bypassLeftS, blockedHex, chart, mode |
 | `$ACK,...` | command results (`$ACK,CAL7,OK,...`, `$ACK,SLI,REFUSED,A2,D0,CUT`, `$ACK,LC,COMMITTED,<name>`, ...) |
 | `$D,...` | debug report lines, ending with `$D,END` |

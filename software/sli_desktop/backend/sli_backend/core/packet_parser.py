@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # $T CSV field count (must match firmware telemetry_fmt.cpp)
 TELEMETRY_FIELD_COUNT = 15
+TELEMETRY_FIELD_COUNT_ROPE = 17   # + ropeTotalMM, hookDropMM (firmware from 2026-10-29)
 
 
 class PacketParser:
@@ -107,14 +108,17 @@ class PacketParser:
         Parse $T CSV line into TelemetryFrame.
         Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
                    ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-                   safeLimit,loadPct,alarmLvl
+                   safeLimit,loadPct,alarmLvl[,ropeTotalMM,hookDropMM]
+        The last two were appended later; older firmware sends 15 fields and
+        they are then left at 0.
         """
         try:
             parts = line.split(",")
-            if len(parts) != TELEMETRY_FIELD_COUNT + 1:  # +1 for "$T" prefix
+            n = len(parts) - 1                             # minus the "$T" prefix
+            if n not in (TELEMETRY_FIELD_COUNT, TELEMETRY_FIELD_COUNT_ROPE):
                 logger.warning(
-                    f"Telemetry field count mismatch: got {len(parts)-1}, "
-                    f"expected {TELEMETRY_FIELD_COUNT}"
+                    f"Telemetry field count mismatch: got {n}, "
+                    f"expected {TELEMETRY_FIELD_COUNT} or {TELEMETRY_FIELD_COUNT_ROPE}"
                 )
                 return None
 
@@ -132,6 +136,8 @@ class PacketParser:
                 safeLoadLimit = float(parts[13]),
                 loadPercent   = float(parts[14]),
                 alarmLevel    = int(parts[15]),
+                ropeTotal     = float(parts[16]) if n >= 17 else 0.0,
+                hookDrop      = float(parts[17]) if n >= 17 else 0.0,
                 timestamp     = time.time(),
             )
             return frame

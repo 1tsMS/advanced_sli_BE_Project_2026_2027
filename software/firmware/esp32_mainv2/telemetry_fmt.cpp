@@ -7,9 +7,9 @@
 int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufLen) {
     // Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
     //            ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-    //            safeLimit,loadPct,alarmLvl\n
+    //            safeLimit,loadPct,alarmLvl,ropeTotalMM,hookDropMM\n
     int written = snprintf(buffer, bufLen,
-        "$T,%.2f,%.1f,%.2f,%.2f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.2f,%.1f,%u\n",
+        "$T,%.2f,%.1f,%.2f,%.2f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.2f,%.1f,%u,%.1f,%.1f\n",
         data.boomAngle,
         data.extensionMM,
         data.loadCellRaw,
@@ -21,7 +21,9 @@ int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufL
         data.imuPitch,
         data.safeLoadLimit,
         data.loadPercent,
-        data.alarmLevel
+        data.alarmLevel,
+        data.ropeTotalMM,
+        data.hookDropMM
     );
     return written;
 }

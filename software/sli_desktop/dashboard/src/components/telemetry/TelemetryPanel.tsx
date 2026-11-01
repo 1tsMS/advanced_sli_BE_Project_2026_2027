@@ -17,6 +17,8 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
   const boomAngle = f?.boomAngle ?? 0;
   const extMM = f?.extensionMM ?? 0;
   const ropeLen = f?.ropeLength ?? 0;
+  const hookDrop = f?.hookDrop ?? 0;      // 0 = firmware before the rope offsets
+  const ropeTotal = f?.ropeTotal ?? 0;
   const swingAngle = f?.swingAngle ?? 0;
   const imuBoom = f?.imuRoll ?? 0;    // boom angle as the IMU sees it (cross-check)
   const lean = f?.imuPitch ?? 0;      // sideways lean of the boom
@@ -126,10 +128,17 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
               </span>
             </div>
 
-            <div className="tel-stat-card">
-              <span className="stat-label">Rope Length</span>
+            <div className="tel-stat-card" title={`Calibrated (load-cell end to knot): ${fmt(ropeLen, 0)} mm`}>
+              <span className="stat-label">Hook Drop</span>
               <span className="stat-value">
-                {fmt(ropeLen, 0)}<span className="stat-unit">mm</span>
+                {hookDrop > 0 ? fmt(hookDrop, 0) : "–"}<span className="stat-unit">mm</span>
+              </span>
+            </div>
+
+            <div className="tel-stat-card" title="All rope: calibrated + 245 mm fixed path + 90 mm knot to hook">
+              <span className="stat-label">Rope Total</span>
+              <span className="stat-value">
+                {ropeTotal > 0 ? fmt(ropeTotal, 0) : "–"}<span className="stat-unit">mm</span>
               </span>
             </div>
           </div>

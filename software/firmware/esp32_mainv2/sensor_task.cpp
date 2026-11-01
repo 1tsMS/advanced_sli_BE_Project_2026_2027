@@ -111,17 +111,23 @@ static float    _lastSavedValue[ENC_COUNT + 1] = {0};
 static uint32_t _stableMs[ENC_COUNT + 1]       = {0};
 
 // ---- Rope (N20 winch encoder) ----
-// rope mm = ref + sign * (count - zero) * scale
+// rope mm = ref + sign * (count - zero) * scale  = drum side: what the encoder measures,
+// equal to the hanging length (load-cell end to knot) at the extension it was referenced at.
+// The winch is fixed and the rope runs along the telescope, so every mm of extension pulls
+// a mm of rope over the boom tip: hanging = rope - (extension - extRef).
 struct RopeCal {
-    float   scale = ROPE_MM_PER_COUNT_DEFAULT;   // mm per PCNT count
-    int8_t  sign  = 1;
-    float   ref   = 0.0f;
-    int32_t zero  = 0;
+    float   scale  = ROPE_MM_PER_COUNT_DEFAULT;  // mm per PCNT count
+    int8_t  sign   = 1;
+    float   ref    = 0.0f;
+    int32_t zero   = 0;
+    float   extRef = NAN;   // telescope extension when the rope was referenced (NAN = unknown: no compensation)
 };
 static RopeCal _rope;
 
 static int32_t ropeRawCounts() { return (_winchEnc ? _winchEnc->getCount() : 0) - _rope.zero; }
 static float   ropeValue()     { return _rope.ref + (float)(_rope.sign * ropeRawCounts()) * _rope.scale; }
+/** Rope pulled over the tip since the reference, by extending (mm, 0 if not referenced). */
+static float   ropeExtShift(float extMm) { return isfinite(_rope.extRef) ? extMm - _rope.extRef : 0.0f; }
 
 // Loop stages timed for DBG (index into SensorDiag::stageMaxMs)
 enum { STAGE_IMUCAL, STAGE_ENC, STAGE_SAVE, STAGE_MAG, STAGE_CAL, STAGE_IMU, STAGE_HX, STAGE_COUNT };
@@ -198,7 +204,7 @@ static void savePosition(uint8_t idx) {
 }
 
 static void saveRope() {
-    persist_setRope(_rope.scale, _rope.sign < 0);
+    persist_setRope(_rope.scale, _rope.sign < 0, _rope.extRef);
 }
 
 void sensorTask_loadCalibration() {
@@ -230,6 +236,7 @@ void sensorTask_loadCalibration() {
     const float ropeScale = p.getFloat("scale", ROPE_MM_PER_COUNT_DEFAULT);
     _rope.scale = (ropeScale > 0.0f) ? ropeScale : ROPE_MM_PER_COUNT_DEFAULT;
     _rope.sign  = p.getBool("inv", false) ? -1 : 1;
+    _rope.extRef = p.getFloat("ext_ref", NAN);   // absent until the rope is re-referenced
     p.end();
 
     // ---- Saved positions (encoders are restored after their first sample) ----
@@ -385,9 +392,12 @@ static void runCal(const CalRequest& req) {
             if (req.axis == CAL_AXIS_ROPE) {
                 _rope.zero = _winchEnc ? _winchEnc->getCount() : 0;
                 _rope.ref  = req.value;
+                // Remember the extension this length belongs to (hook-drop compensation)
+                if (_axis[ENC_TELE].hasSample()) _rope.extRef = _axis[ENC_TELE].value();
                 savePosition(ENC_COUNT);
+                saveRope();
                 _lastSavedValue[ENC_COUNT] = req.value;
-                serialLine("$ACK,CAL4,A4,ROPE,OK,VALUE:%.2f", ropeValue());
+                serialLine("$ACK,CAL4,A4,ROPE,OK,VALUE:%.2f,EXT_REF:%.1f", ropeValue(), _rope.extRef);
                 return;
             }
             if (req.axis >= ENC_COUNT) { serialLine("$ACK,CAL4,ERR,BAD_AXIS"); return; }
@@ -713,7 +723,11 @@ void sensorTask(void* pvParameters) {
             sensorData.boomAngle    = boom;
             sensorData.teleAngle    = (float)_axis[ENC_TELE].countsFromReference() * 360.0f / EncoderAxis::COUNTS_PER_REV;
             sensorData.extensionMM  = _axis[ENC_TELE].value();
-            sensorData.ropeLengthMM = ropeLen;
+            // Total rope is fixed by the drum; the hanging part shrinks as the telescope extends
+            const float ropeHang = ropeLen - ropeExtShift(sensorData.extensionMM);
+            sensorData.ropeLengthMM = ropeHang;
+            sensorData.ropeTotalMM  = ropeLen + ROPE_FIXED_PATH_MM + ROPE_KNOT_TO_HOOK_MM;
+            sensorData.hookDropMM   = ropeHang + ROPE_KNOT_TO_HOOK_MM;
 
             sensorData.loadCellRaw  = weight;   // kg, uncorrected
             sensorData.actualLoadKg = weight;   // Phase 3: will add angle compensation
