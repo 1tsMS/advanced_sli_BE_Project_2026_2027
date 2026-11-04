@@ -1,0 +1,22 @@
+{
+  "loadedMinKg": 0.05,
+  "loadedFrac": 0.3,
+  "snatchDaf": 1.3,
+  "rippleWindowS": 2.0,
+  "pen": {
+    "cutEvent": 10.0,
+    "warnEvent": 3.0,
+    "cutPerS": 2.0,
+    "warnPerS": 0.5,
+    "snatch": 5.0,
+    "tipWarnPerS": 2.0,
+    "refusal": 2.0,
+    "estop": 3.0,
+    "sliNotArmed": 10.0
+  },
+  "safetyZeroAt": 50.0,
+  "currency": "INR",
+  "ratePerMin": 85.0,
+  "ratePerKg": 100.0,
+  "ratePerPenaltyPoint": 5.0
+}

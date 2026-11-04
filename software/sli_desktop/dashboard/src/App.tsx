@@ -8,6 +8,7 @@ import { useTelemetry } from "./hooks/useTelemetry";
 import { TelemetryPanel } from "./components/telemetry/TelemetryPanel";
 import { MotorControls } from "./components/controls/MotorControls";
 import { CraneVisualizer } from "./components/visualizer/CraneVisualizer";
+import { loadStatus } from "./components/telemetry/loadStatus";
 import { Gauge } from "./components/shared/Gauge";
 import { SettingsTab } from "./components/settings/SettingsTab";
 import { DebugTab } from "./components/debug/DebugTab";
@@ -136,11 +137,12 @@ export default function App() {
               </div>
               <div className="header-stat">
                 <span className="header-stat-val" style={{
-                  color: (frame.actualLoad > 10.0 || frame.loadPercent >= 900)
+                  color: loadStatus(frame) !== "ok"
                     ? "var(--amber)"
                     : frame.loadPercent >= 100 ? "var(--red)" : frame.loadPercent >= 80 ? "var(--amber)" : "var(--cyan)"
                 }}>
-                  {frame.actualLoad > 10.0 || frame.loadPercent >= 900 ? "UNCAL" : `${frame.loadPercent.toFixed(1)}%`}
+                  {loadStatus(frame) === "outside" ? "OUT OF CHART"
+                    : loadStatus(frame) === "loadErr" ? "UNCAL" : `${frame.loadPercent.toFixed(1)}%`}
                 </span>
               </div>
             </>
@@ -202,10 +204,11 @@ export default function App() {
                       label="Load"
                       unit="%"
                       size={105}
-                      isError={(frame?.actualLoad ?? 0) > 10.0 || (frame?.actualLoad ?? 0) < -0.5 || (frame?.loadPercent ?? 0) >= 900}
+                      isError={loadStatus(frame) !== "ok"}
+                      errorText={loadStatus(frame) === "outside" ? ["OUT", "CHART"] : ["ERR", "UNCAL"]}
                     />
                     <Gauge value={frame?.boomAngle ?? 0} min={0} max={80} label="Boom" unit="°" color="#00D68F" size={105} />
-                    <Gauge value={frame?.imuPitch ?? 0} min={-15} max={15} label="Tilt" unit="°" color="#00D4FF" size={105} />
+                    <Gauge value={frame?.imuPitch ?? 0} min={-15} max={15} label="Tilt" unit="°" color="#22C4DE" size={105} />
                   </div>
                 </div>
 

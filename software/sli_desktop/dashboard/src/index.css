@@ -2,18 +2,18 @@
 
 /* ====================== DESIGN TOKENS ====================== */
 :root {
-  --bg-base:        #0B0E14;
-  --bg-sidebar:     #080A0F;
-  --bg-card:        #121620;
-  --bg-card-hover:  #171D2A;
-  --bg-input:       #0E121B;
-  --border:         #1C2333;
-  --border-light:   #252E42;
-  --border-accent:  rgba(0, 212, 255, 0.4);
+  --bg-base:        #060708;
+  --bg-sidebar:     #040505;
+  --bg-card:        #0D0F11;
+  --bg-card-hover:  #131619;
+  --bg-input:       #090A0C;
+  --border:         #1A1D21;
+  --border-light:   #262A30;
+  --border-accent:  rgba(34, 196, 222, 0.38);
 
-  --cyan:           #00D4FF;
-  --cyan-dim:       rgba(0, 212, 255, 0.12);
-  --cyan-glow:      0 0 16px rgba(0, 212, 255, 0.3);
+  --cyan:           #22C4DE;
+  --cyan-dim:       rgba(34, 196, 222, 0.11);
+  --cyan-glow:      0 0 14px rgba(34, 196, 222, 0.22);
 
   --amber:          #F5A623;
   --amber-dim:      rgba(245, 166, 35, 0.15);
@@ -25,9 +25,9 @@
   --green:          #00D68F;
   --green-dim:      rgba(0, 214, 143, 0.15);
 
-  --text-primary:   #E2E6F0;
-  --text-secondary: #8B95AD;
-  --text-muted:     #4A546D;
+  --text-primary:   #E6E8EB;
+  --text-secondary: #8D939C;
+  --text-muted:     #4C525A;
 
   --radius-sm:  6px;
   --radius-md:  10px;
@@ -95,7 +95,7 @@ button {
 .sidebar-brand {
   width: 34px;
   height: 34px;
-  background: linear-gradient(135deg, #0052CC, var(--cyan));
+  background: #0E7F93;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -184,7 +184,7 @@ button {
 
 .sidebar-conn.esp.live::before {
   background: var(--cyan);
-  box-shadow: 0 0 8px rgba(0, 212, 255, 0.85);
+  box-shadow: 0 0 8px rgba(34, 196, 222, 0.85);
 }
 
 .conn-tag {
@@ -201,7 +201,7 @@ button {
 }
 
 .sidebar-conn.esp.live .conn-tag {
-  color: rgba(0, 212, 255, 0.9);
+  color: rgba(34, 196, 222, 0.9);
 }
 
 /* ====================== MAIN AREA ====================== */
@@ -444,7 +444,7 @@ button {
   gap: 8px;
   background: rgba(255, 255, 255, 0.015);
 }
-.panel-header .ph-icon { color: var(--cyan); }
+.panel-header .ph-icon { color: var(--text-muted); }
 .panel-header .ph-badge {
   margin-left: auto;
   font-size: 10px;
@@ -474,8 +474,9 @@ button {
 
 /* Hero Load Card */
 .tel-hero-card {
-  background: rgba(0, 212, 255, 0.035);
-  border: 1px solid rgba(0, 212, 255, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-light);
+  border-left: 2px solid var(--cyan);
   border-radius: var(--radius-md);
   padding: 12px;
   display: flex;
@@ -488,7 +489,7 @@ button {
   gap: 6px;
   font-size: 10.5px;
   font-weight: 700;
-  color: var(--cyan);
+  color: var(--text-secondary);
   letter-spacing: 0.8px;
   text-transform: uppercase;
 }
@@ -692,7 +693,7 @@ button {
   justify-content: center;
   padding: 6px;
   min-height: 0;
-  background: #090B10;
+  background: #070809;
   position: relative;
 }
 
@@ -702,7 +703,7 @@ button {
   gap: 20px;
   justify-content: center;
   border-top: 1px solid var(--border);
-  background: rgba(18, 22, 32, 0.95);
+  background: rgba(13, 15, 17, 0.96);
   flex-shrink: 0;
 }
 
@@ -739,7 +740,7 @@ button {
 
 .axis-id {
   font-family: var(--font-mono);
-  color: var(--cyan);
+  color: var(--text-muted);
   font-size: 10.5px;
 }
 
@@ -766,15 +767,15 @@ button {
   transition: all 0.12s ease;
 }
 .mtr-btn:hover {
-  border-color: rgba(0, 212, 255, 0.4);
+  border-color: rgba(34, 196, 222, 0.4);
   color: var(--cyan);
-  background: rgba(0, 212, 255, 0.05);
+  background: rgba(34, 196, 222, 0.05);
 }
 .mtr-btn.pressed {
   background: var(--cyan-dim);
   border-color: var(--cyan);
   color: var(--cyan);
-  box-shadow: 0 0 10px rgba(0, 212, 255, 0.35);
+  box-shadow: 0 0 10px rgba(34, 196, 222, 0.35);
   transform: scale(0.97);
 }
 .mtr-btn.stop {
@@ -931,7 +932,7 @@ button {
   gap: 6px;
 }
 .btn-primary:hover {
-  background: rgba(0, 212, 255, 0.22);
+  background: rgba(34, 196, 222, 0.22);
   box-shadow: var(--cyan-glow);
 }
 .btn-primary:disabled {
@@ -1027,7 +1028,7 @@ button {
 }
 .form-select:focus, .form-input:focus {
   border-color: var(--border-accent);
-  box-shadow: 0 0 8px rgba(0, 212, 255, 0.2);
+  box-shadow: 0 0 8px rgba(34, 196, 222, 0.2);
 }
 .form-select option {
   background: #181D2A;
@@ -1111,7 +1112,7 @@ button {
 .enc-empty { font-size: 11px; color: var(--text-muted); }
 .enc-row {
   padding: 8px 10px;
-  background: rgba(18, 22, 32, 0.7);
+  background: rgba(13, 15, 17, 0.7);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   display: flex;
@@ -1299,9 +1300,9 @@ button {
   user-select: none;
 }
 .btn-primary:hover:not(:disabled) {
-  background: rgba(0, 212, 255, 0.22);
+  background: rgba(34, 196, 222, 0.22);
   border-color: var(--cyan);
-  box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+  box-shadow: 0 0 10px rgba(34, 196, 222, 0.3);
 }
 .btn-primary:active:not(:disabled) {
   transform: scale(0.97);
@@ -1374,7 +1375,7 @@ button {
 
 .tele-section-card {
   padding: 8px 10px;
-  background: rgba(18, 22, 32, 0.7);
+  background: rgba(13, 15, 17, 0.7);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   display: flex;
@@ -1438,16 +1439,16 @@ button {
 }
 
 .tele-jog-btn:hover {
-  border-color: rgba(0, 212, 255, 0.4);
+  border-color: rgba(34, 196, 222, 0.4);
   color: var(--cyan);
-  background: rgba(0, 212, 255, 0.06);
+  background: rgba(34, 196, 222, 0.06);
 }
 
 .tele-jog-btn.pressed {
   background: var(--cyan-dim);
   border-color: var(--cyan);
   color: var(--cyan);
-  box-shadow: 0 0 10px rgba(0, 212, 255, 0.35);
+  box-shadow: 0 0 10px rgba(34, 196, 222, 0.35);
   transform: scale(0.97);
 }
 
@@ -1721,7 +1722,7 @@ button {
   min-width: 0;
 }
 .lc-prof:hover { border-color: var(--border-light); }
-.lc-prof.sel   { border-color: var(--border-accent); background: rgba(0, 212, 255, 0.05); }
+.lc-prof.sel   { border-color: var(--border-accent); background: rgba(34, 196, 222, 0.05); }
 .lc-prof:focus-visible { outline: 1px solid var(--cyan); }
 .lc-prof-top  { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .lc-prof-name {

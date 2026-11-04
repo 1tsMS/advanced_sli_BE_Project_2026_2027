@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import type { TelemetryFrame } from "../../types";
+import { loadStatus } from "../telemetry/loadStatus";
 
 interface CraneVisualizerProps {
   frame: TelemetryFrame | null;
@@ -30,16 +31,17 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const el = containerRef.current;
     if (!el) return;
 
-    const ro = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 50 && height > 50) {
-          setDimensions({
-            width: Math.floor(width),
-            height: Math.floor(height)
-          });
-        }
+    const apply = (width: number, height: number) => {
+      if (width > 50 && height > 50) {
+        setDimensions({ width: Math.floor(width), height: Math.floor(height) });
       }
+    };
+    // Measure once now: the observer's first callback can be late (hidden tab)
+    const r = el.getBoundingClientRect();
+    apply(r.width, r.height);
+
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) apply(entry.contentRect.width, entry.contentRect.height);
     });
 
     ro.observe(el);
@@ -79,7 +81,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const colorWarn = "#F5A623";
     const colorDanger = "#FF3B3B";
     const statusColor = alarmLevel >= 2 ? colorDanger : alarmLevel === 1 ? colorWarn : colorSafe;
-    const cyanAccent = "#00D4FF";
+    const cyanAccent = "#22C4DE";
 
     // --- Layout Geometry ---
     // Pivot positioned at right-center so boom elevates and reaches toward the left
@@ -112,7 +114,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const boomEndY = pivY - Math.sin(angleRad) * currentBoomLen;
 
     // Clear background
-    ctx.fillStyle = "#0A0D14";
+    ctx.fillStyle = "#070809";
     ctx.fillRect(0, 0, W, H);
 
     // --- Engineering CAD Grid ---
@@ -176,7 +178,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const radiusPx = pivX - boomEndX;
     if (radiusPx > 30) {
       ctx.save();
-      ctx.strokeStyle = "rgba(0, 212, 255, 0.4)";
+      ctx.strokeStyle = "rgba(34, 196, 222, 0.4)";
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 3]);
 
@@ -194,7 +196,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
       // Horizontal dimension line with arrows
       ctx.setLineDash([]);
-      ctx.strokeStyle = "rgba(0, 212, 255, 0.7)";
+      ctx.strokeStyle = "rgba(34, 196, 222, 0.7)";
       const dimY = groundY + 14;
       ctx.beginPath();
       ctx.moveTo(boomEndX + 4, dimY);
@@ -240,7 +242,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
     // Turntable Slewing Pedestal
     ctx.fillStyle = "#191E2B";
-    ctx.strokeStyle = "rgba(0, 212, 255, 0.35)";
+    ctx.strokeStyle = "rgba(34, 196, 222, 0.35)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(pivX - 25, groundY - 11);
@@ -286,7 +288,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.lineTo(barrelEndX, barrelEndY);
     ctx.stroke();
 
-    ctx.strokeStyle = "rgba(0, 212, 255, 0.5)";
+    ctx.strokeStyle = "rgba(34, 196, 222, 0.5)";
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -430,7 +432,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.arc(boomEndX, boomEndY, 7.5, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "#0A0D14";
+    ctx.fillStyle = "#070809";
     ctx.beginPath();
     ctx.arc(boomEndX, boomEndY, 3, 0, Math.PI * 2);
     ctx.fill();
@@ -467,13 +469,14 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Load indicator at hook
-    const isLoadError = actualLoad > 10.0 || actualLoad < -0.5 || (frame?.loadPercent ?? 0) >= 900;
-    if (isLoadError) {
+    const ls = loadStatus(frame);
+    const isLoadError = ls !== "ok";
+    if (ls === "loadErr") {
       ctx.fillStyle = "#FFB300";
       ctx.font = "bold 10px JetBrains Mono, monospace";
       ctx.textAlign = "left";
       ctx.fillText("LOAD ERR (>10kg)", hookX + 10, hookY + 12);
-    } else if (actualLoad > 0.05) {
+    } else if (actualLoad > 0.05) {   // also when outside the chart: the load itself is fine
       ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
       ctx.font = "bold 10px JetBrains Mono, monospace";
       ctx.textAlign = "left";
@@ -509,7 +512,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const badgeY = pivY + Math.sin(midAngle) * (arcRadius + 20);
 
     ctx.fillStyle = "rgba(10, 15, 25, 0.85)";
-    ctx.strokeStyle = "rgba(0, 212, 255, 0.4)";
+    ctx.strokeStyle = "rgba(34, 196, 222, 0.4)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(badgeX - 25, badgeY - 10, 50, 20, 4);
@@ -530,7 +533,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.fillStyle = isLoadError ? "#FFB300" : statusColor;
     ctx.textAlign = "left";
     ctx.fillText(
-      isLoadError ? "● LOAD SENSOR ERR (>10kg)" : `● SWL: ${safeLimit.toFixed(1)}kg (${loadPct.toFixed(0)}%)`,
+      ls === "outside" ? "● OUTSIDE LOAD CHART (capacity 0)"
+        : isLoadError ? "● LOAD SENSOR ERR (>10kg)" : `● SWL: ${safeLimit.toFixed(1)}kg (${loadPct.toFixed(0)}%)`,
       16, 24
     );
 
@@ -546,26 +550,17 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.restore();
   }, [dimensions, frame]);
 
+  // Both the box and the canvas are absolutely positioned: the canvas's pixel size
+  // must never feed back into the size the ResizeObserver measures (in normal flow
+  // it could grow the panel but never shrink it, and spilled under the gauges).
   return (
     <div
       ref={containerRef}
-      style={{
-        width: "100%",
-        height: "100%",
-        minHeight: 220,
-        position: "relative",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        overflow: "hidden"
-      }}
+      style={{ position: "absolute", inset: 0, overflow: "hidden" }}
     >
       <canvas
         ref={canvasRef}
-        style={{
-          display: "block",
-          borderRadius: 6
-        }}
+        style={{ position: "absolute", top: 0, left: 0, display: "block", borderRadius: 6 }}
       />
     </div>
   );

@@ -9,6 +9,8 @@ interface GaugeProps {
   color?: string;
   size?: number;
   isError?: boolean;
+  /** Text shown instead of "ERR" / "UNCAL" while isError (e.g. "OUT" / "CHART"). */
+  errorText?: [string, string];
 }
 
 /**
@@ -21,9 +23,10 @@ export function Gauge({
   max,
   label,
   unit = "",
-  color = "#00D4FF",
+  color = "#22C4DE",
   size = 90,
   isError = false,
+  errorText = ["ERR", "UNCAL"],
 }: GaugeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -46,7 +49,7 @@ export function Gauge({
     const totalAngle = (270 * Math.PI) / 180;    // Full sweep = 270°
 
     const isBidirectional = min < 0;
-    const hasError = isError || value >= 900;
+    const hasError = isError;
 
     let arcStart = startAngle;
     let arcEnd = startAngle;
@@ -138,7 +141,7 @@ export function Gauge({
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const displayVal = hasError
-      ? "ERR"
+      ? errorText[0]
       : Number.isFinite(value)
       ? Math.abs(value) >= 100
         ? value.toFixed(0)
@@ -149,14 +152,14 @@ export function Gauge({
     // Unit
     ctx.fillStyle = hasError ? "rgba(255, 179, 71, 0.7)" : "rgba(255,255,255,0.3)";
     ctx.font = `${size * 0.1}px Inter, sans-serif`;
-    ctx.fillText(hasError ? "UNCAL" : unit, cx, cy + size * 0.14);
+    ctx.fillText(hasError ? errorText[1] : unit, cx, cy + size * 0.14);
 
     // Label below
     ctx.fillStyle = "rgba(255,255,255,0.35)";
     ctx.font = `600 ${size * 0.1}px Inter, sans-serif`;
     ctx.fillText(label.toUpperCase(), cx, cy + size * 0.38);
 
-  }, [value, min, max, label, unit, color, size, isError]);
+  }, [value, min, max, label, unit, color, size, isError, errorText[0], errorText[1]]);
 
   return (
     <canvas

@@ -1,5 +1,6 @@
 import type { TelemetryFrame } from "../../types";
 import { Compass, Scale, ShieldAlert, ArrowUpRight } from "lucide-react";
+import { loadStatus } from "./loadStatus";
 
 interface TelemetryPanelProps {
   frame: TelemetryFrame | null;
@@ -11,8 +12,10 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
   const actualLoad = f?.actualLoad ?? 0;
   const safeLimit = f?.safeLoadLimit ?? 5.0;
 
-  // Sanity check: on a 5kg model crane, anything >10kg is uncalibrated raw ADC or sensor error
-  const isLoadError = actualLoad > 10.0 || actualLoad < -0.5 || (f?.loadPercent ?? 0) > 900;
+  // Impossible load reading vs. pose outside the load chart (capacity 0, 999 %)
+  const ls = loadStatus(f);
+  const isLoadError = ls !== "ok";
+  const isOutside = ls === "outside";
   const pct = isLoadError ? 0 : (f?.loadPercent ?? (safeLimit > 0 ? (actualLoad / safeLimit) * 100 : 0));
   const boomAngle = f?.boomAngle ?? 0;
   const extMM = f?.extensionMM ?? 0;
@@ -31,7 +34,7 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
   const isOverload = !isLoadError && pct >= 100;
   const isWarn = !isLoadError && pct >= 80 && pct < 100;
   const statusColor = isLoadError ? "var(--amber)" : isOverload ? "var(--red)" : isWarn ? "var(--amber)" : "var(--green)";
-  const statusLabel = isLoadError ? "LOAD SENSOR ERR" : isOverload ? "OVERLOAD" : isWarn ? "WARNING" : "NORMAL";
+  const statusLabel = isOutside ? "OUTSIDE CHART" : isLoadError ? "LOAD SENSOR ERR" : isOverload ? "OVERLOAD" : isWarn ? "WARNING" : "NORMAL";
 
   // Only the sideways lean is a tip warning; the IMU boom angle is meant to be large
   const imuWarn = Math.abs(lean) > 5;
@@ -55,7 +58,14 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
           </div>
 
           <div className="hero-load-display">
-            {isLoadError ? (
+            {isOutside ? (
+              <>
+                <span className="hero-load-value" style={{ color: statusColor }}>
+                  {fmt(actualLoad, 2)}
+                </span>
+                <span className="hero-load-unit">kg</span>
+              </>
+            ) : isLoadError ? (
               <>
                 <span className="hero-load-value" style={{ color: "var(--amber)", fontSize: "1.4rem" }}>
                   ERR (&gt;10kg)
@@ -91,10 +101,11 @@ export function TelemetryPanel({ frame: f }: TelemetryPanelProps) {
 
           <div className="hero-progress-meta">
             <span className="hero-pct-label" style={{ color: statusColor }}>
-              {isLoadError ? "UNCALIBRATED / OVERFLOW" : `${fmt(pct, 1)}% SWL`}
+              {isOutside ? "OUTSIDE LOAD CHART" : isLoadError ? "UNCALIBRATED / OVERFLOW" : `${fmt(pct, 1)}% SWL`}
             </span>
             <span className="hero-raw-sub">
-              {isLoadError ? "Tare/Calibrate in Debug" : `Sens: ${fmt(f?.measuredLoad ?? 0, 2)}kg`}
+              {isOutside ? `Boom ${fmt(boomAngle, 1)}° / ext ${fmt(extMM, 0)} mm not in chart`
+                : isLoadError ? "Tare/Calibrate in Debug" : `Sens: ${fmt(f?.measuredLoad ?? 0, 2)}kg`}
             </span>
           </div>
         </div>
