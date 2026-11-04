@@ -7,7 +7,7 @@ to SerialManager.send(). All safety enforcement is on the ESP32.
 from __future__ import annotations
 import re
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from .serial_manager import SerialManager
 
@@ -37,12 +37,23 @@ _VALID_PATTERNS = [
     re.compile(r"^LC\s+(COMMIT|GET)$"),
     re.compile(r"^SLI\s+(ON|OFF|BYPASS\s+\d{1,3})$"),                # Arm / off / timed bypass (<= 600 s on the ESP32)
     re.compile(r"^RST$"),                                            # Clear latched E-stop
+    re.compile(r"^SHP\s+[01](\s+L\d{1,4})?$"),                       # Swing input shaping off / on [pendulum mm]
 ]
 
 
 class CommandRouter:
     def __init__(self, serial: SerialManager) -> None:
         self._serial = serial
+        # Called with every command that reached the serial port (lift recorder:
+        # which axis is being driven which way)
+        self.on_sent: Optional[Callable[[str], None]] = None
+
+    def _sent(self, command: str) -> None:
+        if self.on_sent:
+            try:
+                self.on_sent(command)
+            except Exception as e:
+                logger.error(f"on_sent hook failed: {e}")
 
     def send(self, command: str) -> tuple[bool, str]:
         """
@@ -65,6 +76,7 @@ class CommandRouter:
 
         success = self._serial.send(command)
         if success:
+            self._sent(command)
             # Held motions repeat every 100 ms (dead-man): keep them out of the INFO log
             if command[0] == "M":
                 logger.debug(f"CMD → ESP32: {command}")
@@ -78,6 +90,7 @@ class CommandRouter:
         """Direct E-stop — bypasses validation for speed."""
         if self._serial.is_connected:
             self._serial.send("T0")
+            self._sent("T0")
             return True, "E-STOP sent"
         return False, "Not connected"
 

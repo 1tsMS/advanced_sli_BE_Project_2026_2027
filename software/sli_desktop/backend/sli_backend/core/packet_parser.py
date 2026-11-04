@@ -31,6 +31,7 @@ class PacketParser:
         self._on_ack = None
         self._on_safety = None
         self._on_chart = None
+        self._on_shaping = None
         self._chart = ChartReadback()
 
     def set_callbacks(
@@ -40,6 +41,7 @@ class PacketParser:
         on_ack=None,
         on_safety=None,
         on_chart=None,
+        on_shaping=None,
     ) -> None:
         """Register callbacks invoked when packets are fully parsed."""
         self._on_telemetry = on_telemetry
@@ -47,20 +49,34 @@ class PacketParser:
         self._on_ack = on_ack
         self._on_safety = on_safety
         self._on_chart = on_chart
+        self._on_shaping = on_shaping
+
+    @staticmethod
+    def parse_shaping(line: str) -> Optional[dict]:
+        """$SHP,<0|1>,<pendulum length mm>,<T/2 ms>"""
+        parts = line.strip().split(",")
+        if len(parts) != 4:
+            return None
+        try:
+            return {"on": parts[1] == "1", "lengthMm": float(parts[2]), "halfPeriodMs": int(parts[3])}
+        except ValueError:
+            return None
 
     @staticmethod
     def parse_safety(line: str) -> Optional[SafetyStatus]:
-        """$S,state,pct,capKg,zone,bypassLeftS,blockedHex,chartName[,mode] (chart names never
-        contain commas; firmware before SLI OFF sends no mode: then it is ARMED or BYPASS)."""
+        """$S,state,pct,capKg,zone,bypassLeftS,blockedHex,chartName[,mode[,why]] (chart names
+        never contain commas; firmware before SLI OFF sends no mode: then it is ARMED or BYPASS;
+        why = reason for a FAULT / out-of-chart cut, from 2026-11-04 firmware)."""
         parts = line.strip().split(",")
-        if len(parts) not in (8, 9):
+        if len(parts) not in (8, 9, 10):
             return None
         try:
             left = int(parts[5])
-            mode = parts[8] if len(parts) == 9 else ("BYPASS" if left > 0 else "ARMED")
+            mode = parts[8] if len(parts) >= 9 else ("BYPASS" if left > 0 else "ARMED")
+            why = parts[9] if len(parts) == 10 else "-"
             return SafetyStatus(state=parts[1], pct=float(parts[2]), capKg=float(parts[3]),
                                 zone=int(parts[4]), bypassLeftS=left,
-                                blocked=int(parts[6], 16), chart=parts[7], mode=mode,
+                                blocked=int(parts[6], 16), chart=parts[7], mode=mode, why=why,
                                 timestamp=time.time())
         except ValueError:
             return None
@@ -89,6 +105,11 @@ class PacketParser:
             status = self.parse_safety(line)
             if status and self._on_safety:
                 self._on_safety(status)
+
+        elif line.startswith("$SHP,"):
+            shp = self.parse_shaping(line)
+            if shp and self._on_shaping:
+                self._on_shaping(shp)
 
         elif line.startswith("$LC,"):
             chart = self._chart.feed(line)

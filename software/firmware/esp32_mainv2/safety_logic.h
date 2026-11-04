@@ -18,7 +18,7 @@
 //
 //  FAULT (no valid chart, a sensor down, load reading invalid): we can't know
 //  the load moment, so only the motions that always reduce it are allowed:
-//  boom up, retract, winch pay out.
+//  boom up, retract, winch pay out (+ boom down, see SLI_BOOM_DOWN_ALWAYS).
 // ============================================================
 #ifndef SAFETY_LOGIC_H
 #define SAFETY_LOGIC_H
@@ -40,6 +40,13 @@ enum SliState : uint8_t {
 // M4 winch: D0 = wind up / hoist (load can only rise), D1 = pay out.
 #define SLI_WINCH_HOIST_DIR 0
 
+// Boom down is never cut by the SLI, in any state (FAULT included). MS's call
+// (2026-11-04): on this crane the lift limit is the motor stalling, which only
+// gets easier going down. Cost: the chart's lower angle edge no longer stops the
+// boom, so nothing in software keeps the leadscrew T-nut off the coupling at the
+// bottom: a limit switch has to. Set to 0 to cut boom down like every other move.
+#define SLI_BOOM_DOWN_ALWAYS 1
+
 // ---- Look-ahead step per axis (how far ahead a motion is checked) ----
 // At dashboard speeds the axes move well under these in the ~30 ms it takes
 // the cut to reach the motor, so the cut lands before the limit.
@@ -59,12 +66,23 @@ struct SafetyInputs {
     bool  sensorsOK;
 };
 
+/** Why motions are cut (beyond the normal load % look-ahead). */
+enum SliReason : uint8_t {
+    SLI_WHY_NONE      = 0,   // in the chart, sensors fine: cuts come from the look-ahead only
+    SLI_WHY_NO_CHART  = 1,   // FAULT: no valid chart loaded
+    SLI_WHY_SENSOR    = 2,   // FAULT: a sensor is down (SensorData::sensorFault says which)
+    SLI_WHY_LOAD      = 3,   // FAULT: load reading above SLI_MAX_LOAD_KG (HX711 garbage)
+    SLI_WHY_BAD_VALUE = 4,   // FAULT: an angle / extension / load is NaN
+    SLI_WHY_OUTSIDE   = 5    // the pose is outside the chart: capacity 0, only moves back in
+};
+
 struct SafetyResult {
     SliState state;
     float    pct;        // load % of rated capacity (0 in FAULT)
     float    capKg;      // rated capacity at this pose (0 in FAULT / outside chart)
     int8_t   zone;       // swing zone index, -1 = none
     uint8_t  blocked;    // bit sli_bit(axis, dir) set = that motion is not allowed
+    SliReason reason;
 };
 
 /** Bit for axis 1-4, direction 0/1 in SafetyResult::blocked. */
@@ -79,5 +97,6 @@ inline uint8_t sli_bit(uint8_t axis, uint8_t dir) {
 SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliState prev);
 
 const char* sli_stateName(SliState s);
+const char* sli_reasonName(SliReason r);
 
 #endif // SAFETY_LOGIC_H

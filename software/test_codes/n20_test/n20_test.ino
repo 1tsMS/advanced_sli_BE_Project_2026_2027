@@ -1,6 +1,6 @@
 #define IN1 13
 #define IN2 14
-#define STBY 12   // DRV8833 nSLEEP (EEP/STBY on the board): LOW or floating = driver asleep
+#define STBY 4   // DRV8833 nSLEEP (EEP/STBY on the board): LOW or floating = driver asleep
 
 #define ENC_A 18
 #define ENC_B 19

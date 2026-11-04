@@ -1,0 +1,41 @@
+{
+  "name": "Max lift 1-11",
+  "description": "MS max lifts with SLI off, retracted, 150 mm hook drop (1 kg/950 g at 7 deg, 900/800 g at 12 deg, 750 g at 53 deg; lower value kept). Extended column = 600 g from 2026-10-29, middle interpolated. Stall limits, not tipping.",
+  "anglesDeg": [
+    0.0,
+    7.0,
+    12.5,
+    50.0
+  ],
+  "extensionsMM": [
+    22.4,
+    45.0,
+    67.4
+  ],
+  "capacityKg": [
+    [
+      0.95,
+      0.775,
+      0.6
+    ],
+    [
+      0.95,
+      0.775,
+      0.6
+    ],
+    [
+      0.8,
+      0.7,
+      0.6
+    ],
+    [
+      0.75,
+      0.675,
+      0.6
+    ]
+  ],
+  "zones": [],
+  "warnPct": 90.0,
+  "cutPct": 100.0,
+  "updated": "2026-11-01T15:43:45"
+}

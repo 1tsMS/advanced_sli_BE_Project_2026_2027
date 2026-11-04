@@ -17,9 +17,9 @@ interface DebugTabProps {
 
 // ---- Human-readable device names + GPIO info ----
 const DEVICE_INFO: Record<string, { name: string; gpio: string }> = {
-  "I2C0_SWING":   { name: "AS5600 Swing Encoder",    gpio: "SDA=21 SCL=22" },
+  "I2C0_SWING":   { name: "AS5600 Swing Encoder",    gpio: "SDA=32 SCL=33" },
   "I2C1_BOOM":    { name: "AS5600 Boom Encoder",     gpio: "SDA=25 SCL=26" },
-  "I2C2_TELE":    { name: "AS5600 Telescope Enc.",   gpio: "SDA=32 SCL=33" },
+  "I2C2_TELE":    { name: "AS5600 Telescope Enc.",   gpio: "SDA=15 SCL=5" },
   "MPU6050":      { name: "MPU6050 (IMU)",           gpio: "SDA=21 SCL=22" },
   "HX711":        { name: "HX711 (Load Cell)",       gpio: "DT=17 SCK=16"  },
   "HX711_RAW":    { name: "HX711 raw counts",        gpio: "DT=17 SCK=16"  },

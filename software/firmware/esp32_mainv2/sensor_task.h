@@ -84,7 +84,7 @@ void sensorTask_init(
 void sensorTask(void* pvParameters);
 
 /**
- * Hardware-I2C bus task (core 1): reads the swing (bus 0) and boom (bus 1)
+ * Hardware-I2C bus task (core 1): reads the swing (bus 3) and boom (bus 1)
  * AS5600s and the MPU6050 (bus 0), and runs IMU zeroing. Kept separate so an
  * I2C hang there (>= 1 s in this ESP32 core) can't freeze the telescope,
  * load cell, FSRs or winch in sensorTask.

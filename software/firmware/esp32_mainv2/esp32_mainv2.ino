@@ -46,17 +46,17 @@ const char* g_resetReason = "?";
 SensorData sensorData;
 
 // ======================== I2C BUSES ========================
-// All three buses are bit-banged (see soft_i2c.h): the hardware Wire driver in
+// All four buses are bit-banged (see soft_i2c.h): the hardware Wire driver in
 // this core blocks for >= 1 s when noise hangs a transfer; this can't hang.
-// Half-bit delay: 5 us where real pull-ups exist (GY-521 board on bus 0,
-// 4.7k added on bus 2), 8 us on bus 1 (boom encoder board pull-ups unknown).
-// Each bus is used by exactly one task (bus 0 + 1: HwBusTask, bus 2: SensorTask).
-SoftI2C i2cBus0(I2C0_SDA, I2C0_SCL, 5);   // swing AS5600 + MPU6050
+// Half-bit delay: 5 us, 8 us on bus 1 (kept from before its pull-ups were known).
+// Each bus is used by exactly one task (bus 0, 1, 3: HwBusTask, bus 2: SensorTask).
+SoftI2C i2cBus0(I2C0_SDA, I2C0_SCL, 5);   // MPU6050 only
 SoftI2C i2cBus1(I2C1_SDA, I2C1_SCL, 8);   // boom AS5600
 SoftI2C i2cBus2(I2C2_SDA, I2C2_SCL, 5);   // telescope AS5600
+SoftI2C i2cBus3(I2C3_SDA, I2C3_SCL, 5);   // swing AS5600
 
 // ======================== SENSOR DRIVERS ========================
-AS5600Driver swingEncoder(&i2cBus0);
+AS5600Driver swingEncoder(&i2cBus3);
 AS5600Driver boomEncoder(&i2cBus1);
 AS5600Driver teleEncoder(&i2cBus2);
 MPU6050Driver imu(&i2cBus0);
@@ -118,9 +118,10 @@ void setup() {
     i2cBus0.begin();
     i2cBus1.begin();
     i2cBus2.begin();
-    Serial.printf("AS5600 swing (21/22): %s\n", swingEncoder.begin() ? "DETECTED" : "NOT FOUND");
+    i2cBus3.begin();
+    Serial.printf("AS5600 swing (32/33): %s\n", swingEncoder.begin() ? "DETECTED" : "NOT FOUND");
     Serial.printf("AS5600 boom  (25/26): %s\n", boomEncoder.begin()  ? "DETECTED" : "NOT FOUND");
-    Serial.printf("AS5600 tele  (32/33): %s\n", teleEncoder.begin()  ? "DETECTED" : "NOT FOUND");
+    Serial.printf("AS5600 tele  (15/5) : %s\n", teleEncoder.begin()  ? "DETECTED" : "NOT FOUND");
 
     if (imu.begin()) {
         Serial.println("MPU6050 (21/22): DETECTED, calibrating gyro (keep still)...");

@@ -24,9 +24,19 @@ export interface RulerAxisConfig {
   outLabel: string;
   inLabel: string;
   value: (f: TelemetryFrame | null | undefined) => number;
+  /** What the encoder itself measures, if it differs from `value` (rope: the drum side,
+   *  without the telescope compensation that `value` includes). Steps are counted from this. */
+  stepValue?: (f: TelemetryFrame | null | undefined) => number;
+  /** Fit measured = offset + scale * steps instead of a line through the zero. For axes
+   *  whose zero position doesn't read 0 on the tape (rope: hook fully up is not 0 mm). */
+  fitOffset?: boolean;
   zero: () => Promise<{ ok: boolean; msg: string }>;
-  save: (scale: number, invert: boolean) => Promise<{ ok: boolean; msg: string }>;
+  /** value = what the axis measures right now; sent as its new reference (fitOffset axes). */
+  save: (scale: number, invert: boolean, value?: number) => Promise<{ ok: boolean; msg: string }>;
 }
+
+// config.h ROPE_FIXED_PATH_MM + ROPE_KNOT_TO_HOOK_MM: ropeTotal = drum-side rope + this
+const ROPE_TOTAL_EXTRA_MM = 245 + 90;
 
 async function apiPost(path: string, body: object = {}) {
   try {
@@ -65,7 +75,7 @@ export const ROPE_RULER: RulerAxisConfig = {
   unit: "mm",
   minSteps: 50,
   title: "Rope Length (2-point, winch)",
-  sub: "Point 1: hook fully up → Set Zero. Point 2: pay out, measure with a tape, Record point → Save fit.",
+  sub: "Measure load-cell end → knot with a tape. Record a point at the top, pay out, record 2+ more → Save fit. The fit doesn't need the zero to be exact.",
   zeroLabel: "Set Zero (Hook Up)",
   zeroHint: "Wind the hook fully up, then press: this rope length becomes 0 mm",
   diagTag: "ROPE",
@@ -74,8 +84,11 @@ export const ROPE_RULER: RulerAxisConfig = {
   defaultScale: (Math.PI * 20) / 3360, defaultInvert: false,   // config.h guess
   motorAxis: 4, outDir: 1, outLabel: "Pay out ▼", inLabel: "▲ Wind up",
   value: f => f?.ropeLength ?? 0,
+  // ropeLength subtracts the rope the telescope pulled over the tip; the encoder doesn't see that
+  stepValue: f => (f && f.ropeTotal > 0 ? f.ropeTotal - ROPE_TOTAL_EXTRA_MM : f?.ropeLength ?? 0),
+  fitOffset: true,
   zero: () => apiPost("/calibrate/encoder", { axis: "rope", value: 0 }),
-  save: (scale, invert) => apiPost("/calibrate/rope", { scale, invert }),
+  save: (scale, invert, value) => apiPost("/calibrate/rope", { scale, invert, value }),
 };
 
 export const SWING_RULER: RulerAxisConfig = {

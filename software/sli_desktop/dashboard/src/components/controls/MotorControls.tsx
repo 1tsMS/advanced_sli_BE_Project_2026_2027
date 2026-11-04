@@ -3,6 +3,7 @@ import { Square, Gamepad2 } from "lucide-react";
 import { useHoldToMove, type MotionAxis } from "../../hooks/useHoldToMove";
 import { useGamepad } from "../../hooks/useGamepad";
 import { isBlocked, liveSafety, useNow, type ReceivedSafety } from "../sli/sliStatus";
+import type { ShapingState } from "../../types";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -18,6 +19,30 @@ interface MotorControlsProps {
   speed: number;
   onSpeedChange: (s: number) => void;
   safety: ReceivedSafety;
+  shaping: ShapingState | null;
+}
+
+/** Swing input shaping (ZV on the Mega). The ESP32 confirms with $SHP. */
+function ShapingToggle({ shaping }: { shaping: ShapingState | null }) {
+  const [busy, setBusy] = useState(false);
+  const on = !!shaping?.on;
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      await fetch(`${API_BASE}/shaping`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: !on }),
+      });
+    } catch { /* offline */ }
+    setBusy(false);
+  };
+  return (
+    <button className={`gp-badge shp-btn ${on ? "live" : ""}`} onClick={toggle} disabled={busy}
+            title={on
+              ? `Swing input shaping ON: every swing start/stop is split in two halves ${shaping!.halfPeriodMs} ms apart (pendulum ${shaping!.lengthMm.toFixed(0)} mm). E-stop and SLI cuts stay instant.`
+              : "Swing input shaping OFF. Click to cancel load sway on swing starts and stops (needs the latest ESP32 + Mega firmware)."}>
+      Swing shaping {on ? `ON · T/2 ${shaping!.halfPeriodMs} ms` : "OFF"}
+    </button>
+  );
 }
 
 /**
@@ -25,7 +50,7 @@ interface MotorControlsProps {
  * repeats the command while held; the firmware stops any axis whose command
  * stops arriving for 400 ms (dead-man).
  */
-export function MotorControls({ speed, onSpeedChange, safety }: MotorControlsProps) {
+export function MotorControls({ speed, onSpeedChange, safety, shaping }: MotorControlsProps) {
   const motion = useHoldToMove();
   const sli = liveSafety(safety, useNow());
   // Shown before pressing; the ESP32 still decides (and the alert bar explains a refusal)
@@ -105,7 +130,8 @@ export function MotorControls({ speed, onSpeedChange, safety }: MotorControlsPro
         </button>
       </div>
 
-      <div style={{ padding: "0 8px 8px" }}>
+      <div style={{ padding: "0 8px 8px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <ShapingToggle shaping={shaping} />
         <div className={`gp-badge ${gpConnected ? "live" : ""}`}
              title="Left stick: swing / boom · Right stick: telescope · RT/LT: winch · B: E-stop">
           <Gamepad2 size={12} />

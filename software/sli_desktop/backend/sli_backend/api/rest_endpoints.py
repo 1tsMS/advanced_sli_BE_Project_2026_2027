@@ -299,24 +299,24 @@ async def calibrate_axis_scale(req: AxisScaleRequest):
 
 @router.post("/calibrate/rope", response_model=ApiResponse)
 async def calibrate_rope(req: RopeCalibrateRequest):
-    """Rope (winch encoder) scale in mm per N20 count -> CAL6, and optionally direction -> CAL5 A4."""
+    """Rope (winch encoder): direction -> CAL5 A4, scale in mm per N20 count -> CAL6,
+    then optionally the length right now -> CAL4 A4 V (the ruler fit sends it, so the
+    rope reads the measured length whatever the old zero was)."""
     if not _command_router:
         raise HTTPException(500, "Command router not initialized")
     if not (0 < req.scale < 10):
         raise HTTPException(400, "Scale must be between 0 and 10 mm per count")
-    sent = []
+    cmds = []
     if req.invert is not None:
-        cmd = f"CAL5 A4 I{1 if req.invert else 0}"
+        cmds.append(f"CAL5 A4 I{1 if req.invert else 0}")
+    cmds.append(f"CAL6 S{req.scale:.6f}")
+    if req.value is not None:
+        cmds.append(f"CAL4 A4 V{req.value:.3f}")
+    for cmd in cmds:
         ok, msg = _command_router.send(cmd)
         if not ok:
             raise HTTPException(400, msg)
-        sent.append(cmd)
-    cmd = f"CAL6 S{req.scale:.6f}"
-    ok, msg = _command_router.send(cmd)
-    if not ok:
-        raise HTTPException(400, msg)
-    sent.append(cmd)
-    return ApiResponse(ok=True, message="Sent " + " + ".join(sent))
+    return ApiResponse(ok=True, message="Sent " + " + ".join(cmds))
 
 
 # ------------------------------------------------------------------ #

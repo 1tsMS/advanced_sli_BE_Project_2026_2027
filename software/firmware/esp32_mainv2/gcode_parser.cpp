@@ -141,6 +141,18 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
         return PARSE_INVALID_PARAMS;
     }
 
+    // --- SHP 0 / SHP 1 [L<mm>]: swing input shaping ---
+    if (strncmp(line, "SHP", 3) == 0) {
+        const char* p = line + 3;
+        while (*p == ' ') p++;
+        if (*p != '0' && *p != '1') return PARSE_INVALID_PARAMS;
+        out->type       = CMD_SHAPE;
+        out->shapeOn    = (*p == '1');
+        out->shapeLenMm = extractFloatParam(p + 1, 'L', 0.0f);
+        if (out->shapeLenMm < 0.0f) return PARSE_INVALID_PARAMS;
+        return PARSE_OK;
+    }
+
     // --- RST: clear a latched E-stop ---
     if (strncmp(line, "RST", 3) == 0) {
         out->type = CMD_RESET;

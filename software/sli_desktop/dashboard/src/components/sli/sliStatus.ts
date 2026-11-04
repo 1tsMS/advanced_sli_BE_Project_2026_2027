@@ -36,11 +36,19 @@ export function allowedMotions(s: SafetyStatus): string[] {
 export function reasonText(code: string, s: SafetyStatus | null): string {
   switch (code) {
     case "ESTOP": return "E-stop is latched. Press RESET.";
-    case "FAULT":
-      return s?.chart === "NONE"
-        ? "No load chart on the crane. Upload one in the Load Chart tab, or turn the SLI off."
-        : "A sensor is down or giving bad data (check Debug), so the load moment is unknown.";
-    case "CUT":   return s ? `Overload: ${s.pct.toFixed(0)} % of ${s.capKg.toFixed(3)} kg rated here.` : "Overload.";
+    case "FAULT": {
+      const why = s?.why ?? "-";
+      if (s?.chart === "NONE" || why === "NO_CHART")
+        return "No load chart on the crane. Upload one in the Load Chart tab, or turn the SLI off.";
+      if (why.startsWith("SENSOR:"))
+        return `Sensor down: ${why.slice(7).replace(/\+/g, ", ")}. The load moment is unknown until it is back (check Debug).`;
+      if (why === "LOAD_RANGE") return "The load reading is impossible (> 10 kg): HX711 wiring or calibration.";
+      if (why === "BAD_VALUE")  return "An angle or extension reading is invalid (NaN).";
+      return "A sensor is down or giving bad data (check Debug), so the load moment is unknown.";
+    }
+    case "CUT":
+      if (s?.why === "OUTSIDE") return "The crane is outside the load chart (boom angle or extension): only moves back into it are allowed.";
+      return s ? `Overload: ${s.pct.toFixed(0)} % of ${s.capKg.toFixed(3)} kg rated here.` : "Overload.";
     case "LIMIT": return "That move would cross the chart's cut line or leave the chart.";
     default:      return code;
   }

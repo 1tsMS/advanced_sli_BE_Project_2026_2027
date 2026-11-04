@@ -27,6 +27,12 @@ class TelemetryFrame(BaseModel):
     loadPercent:   float = 0.0   # 0-100+
     alarmLevel:    int   = 0     # 0=OK, 1=WARN, 2=CRITICAL, 3=ESTOP
     timestamp:     float = 0.0   # Unix timestamp (added by backend)
+    # Tipping margin from the FSRs (computed by the backend, core/tipping.py)
+    tipValid:      bool  = False
+    tipMargin:     Optional[float] = None   # % (100 = CoP centred, 0 = on the pad edge)
+    copX:          Optional[float] = None   # mm
+    copY:          Optional[float] = None   # mm
+    tipWarn:       bool  = False
 
 
 class DebugEntry(BaseModel):
@@ -86,6 +92,7 @@ class SafetyStatus(BaseModel):
     blocked:     int = 0         # bit (axis-1)*2 + dir set = that motion is cut
     chart:       str = "NONE"
     mode:        str = "ARMED"   # ARMED | BYPASS | OFF (state/blocked are enforced only when ARMED)
+    why:         str = "-"       # - | NO_CHART | SENSOR:IMU+LOAD.. | LOAD_RANGE | BAD_VALUE | OUTSIDE
     timestamp:   float = 0.0
 
 
@@ -122,6 +129,7 @@ class RopeCalibrateRequest(BaseModel):
     """Rope (N20 winch encoder) scale: mm of rope per quadrature count."""
     scale:  float
     invert: Optional[bool] = None
+    value:  Optional[float] = None    # rope length right now (mm), sent last as CAL4 A4 V
 
 
 class LoadCalibrateRequest(BaseModel):
@@ -152,6 +160,29 @@ class TeleCalibrateRequest(BaseModel):
     """Telescope encoder zeroing and scale/invert configuration request."""
     scale:  Optional[float] = None   # mm per revolution
     invert: Optional[bool]  = None   # direction inversion flag
+
+
+class LiftStartRequest(BaseModel):
+    operator: str
+    note:     str = ""
+
+
+class OperatorRequest(BaseModel):
+    name: str
+
+
+class ShapingRequest(BaseModel):
+    """Swing input shaping. lengthMm = pendulum length override (None/0 = from the hook drop)."""
+    on:       bool
+    lengthMm: Optional[float] = None
+
+
+class TippingSettings(BaseModel):
+    legs:       List[List[float]]      # 4 x [x, y] mm, in order around the pads (FSR1..4)
+    gains:      List[float]
+    minTotal:   float = 0.05
+    warnPct:    float = 30.0
+    calibrated: bool = False
 
 
 class ApiResponse(BaseModel):

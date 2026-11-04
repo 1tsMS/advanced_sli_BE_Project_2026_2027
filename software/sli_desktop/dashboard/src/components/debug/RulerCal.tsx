@@ -16,15 +16,33 @@ interface RulerCalProps {
 /** One ruler measurement: encoder steps since zero vs. measured length. */
 interface CalPoint { steps: number; measured: number; }
 
+/** measured = offset + scale * steps */
+interface Fit { scale: number; offset: number; }
+
 /**
- * Least-squares scale through the origin: scale = Σ(m·s) / Σ(s²).
- * Several points average out ruler reading error and backlash; the residuals
- * show whether something is slipping (they grow with travel if it is).
+ * Least-squares line through the points. Several points average out ruler
+ * reading error and backlash; the residuals show whether something is slipping
+ * (they grow with travel if it is).
+ * - withOffset false: through the origin, scale = Σ(m·s) / Σ(s²). Right when the
+ *   zero position really measures 0 (telescope retracted = 0 mm).
+ * - withOffset true: free offset, needs 2+ points spread apart. The zero then
+ *   doesn't have to be exact (rope: the hook fully up is still some mm below the
+ *   load cell; forcing the line through 0 there made the scale come out wrong).
  */
-function fitScale(points: CalPoint[]): number | null {
-  const sss = points.reduce((a, p) => a + p.steps * p.steps, 0);
-  if (sss < 1e-9) return null;
-  return points.reduce((a, p) => a + p.measured * p.steps, 0) / sss;
+function fitLine(points: CalPoint[], withOffset: boolean): Fit | null {
+  const n = points.length;
+  if (!withOffset) {
+    const sss = points.reduce((a, p) => a + p.steps * p.steps, 0);
+    if (sss < 1e-9) return null;
+    return { scale: points.reduce((a, p) => a + p.measured * p.steps, 0) / sss, offset: 0 };
+  }
+  if (n < 2) return null;
+  const sMean = points.reduce((a, p) => a + p.steps, 0) / n;
+  const mMean = points.reduce((a, p) => a + p.measured, 0) / n;
+  const sxx = points.reduce((a, p) => a + (p.steps - sMean) ** 2, 0);
+  if (sxx < 1e-9) return null;
+  const scale = points.reduce((a, p) => a + (p.steps - sMean) * (p.measured - mMean), 0) / sxx;
+  return { scale, offset: mMean - scale * sMean };
 }
 
 export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalProps) {
@@ -44,8 +62,11 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
   const activeScale = espScale ?? cfg.defaultScale;
 
   const live = cfg.value(frame);
-  const liveSteps = live / activeScale;   // signed steps since zero, in the current direction
-  const fit = points.length > 0 ? fitScale(points) : null;
+  // Signed encoder steps in the current direction (from the zero; any constant offset
+  // is absorbed by the fit when cfg.fitOffset)
+  const liveSteps = (cfg.stepValue ?? cfg.value)(frame) / activeScale;
+  const withOffset = !!cfg.fitOffset;
+  const fit = points.length > 0 ? fitLine(points, withOffset) : null;
   const minSteps = cfg.minSteps;
   const u = cfg.unit;
 
@@ -75,16 +96,26 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
   const addPoint = () => {
     const m = parseFloat(measuredMm);
     if (!loaded) { onLog("⚠ Press Scan / Refresh first so the ESP32's scale is known", "err"); return; }
-    if (!Number.isFinite(m) || m <= 0) { onLog(`⚠ Enter the measured value in ${u} (> 0)`, "err"); return; }
-    if (Math.abs(liveSteps) < minSteps) { onLog(`⚠ Move further out: too few ${cfg.stepName} since zero`, "err"); return; }
+    if (!Number.isFinite(m) || m < 0 || (!withOffset && m === 0)) {
+      onLog(`⚠ Enter the measured value in ${u} (${withOffset ? ">= 0" : "> 0"})`, "err"); return;
+    }
+    if (withOffset) {
+      // Any first point; the others must be far enough from every point so far
+      if (points.some(p => Math.abs(p.steps - liveSteps) < minSteps)) {
+        onLog(`⚠ Move further: too close to a recorded point (< ${minSteps} ${cfg.stepName})`, "err"); return;
+      }
+    } else if (Math.abs(liveSteps) < minSteps) {
+      onLog(`⚠ Move further out: too few ${cfg.stepName} since zero`, "err"); return;
+    }
     setPoints(prev => [...prev, { steps: liveSteps, measured: m }]);
     setMeasuredMm("");
     onLog(`+ point: ${m.toFixed(1)} ${u} at ${liveSteps.toFixed(cfg.stepDigits)} ${cfg.stepName}`, "info");
   };
 
-  const saveScale = async (scale: number, invert: boolean, what: string) => {
-    onLog(`→ ${what}: ${scale.toFixed(cfg.scaleDigits)} ${cfg.scaleUnit}, invert=${invert ? 1 : 0}`, "info");
-    const r = await cfg.save(scale, invert);
+  const saveScale = async (scale: number, invert: boolean, what: string, value?: number) => {
+    onLog(`→ ${what}: ${scale.toFixed(cfg.scaleDigits)} ${cfg.scaleUnit}, invert=${invert ? 1 : 0}` +
+          (value !== undefined ? `, now ${value.toFixed(1)} ${u}` : ""), "info");
+    const r = await cfg.save(scale, invert, value);
     onLog(`← ${r.msg}`, r.ok ? "ack" : "err");
     if (r.ok) {
       setPoints([]);            // their direction/scale basis just changed
@@ -96,8 +127,10 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
 
   const saveFit = () => {
     if (fit === null || espInvert === null) return;
-    // A negative fit means the encoder counts the other way: flip the direction
-    saveScale(Math.abs(fit), fit < 0 ? !espInvert : espInvert, `Save fit (${points.length} points)`);
+    // A negative fit means the encoder counts the other way: flip the direction.
+    // Offset fits also send the length right now, so the reading matches the tape.
+    saveScale(Math.abs(fit.scale), fit.scale < 0 ? !espInvert : espInvert, `Save fit (${points.length} points)`,
+              withOffset ? fit.offset + fit.scale * liveSteps : undefined);
   };
 
   const saveManual = () => {
@@ -201,7 +234,7 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
               </thead>
               <tbody>
                 {points.map((p, i) => {
-                  const predicted = fit !== null ? fit * p.steps : null;
+                  const predicted = fit !== null ? fit.offset + fit.scale * p.steps : null;
                   const err = predicted !== null ? p.measured - predicted : null;
                   return (
                     <tr key={i}>
@@ -223,7 +256,10 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
             <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
               Fitted scale:{" "}
               <span style={{ fontFamily: "var(--font-mono)", color: fit !== null ? "var(--cyan)" : "var(--text-muted)" }}>
-                {fit !== null ? `${Math.abs(fit).toFixed(cfg.scaleDigits)} ${cfg.scaleUnit}${fit < 0 ? " (direction flips)" : ""}` : "record a point"}
+                {fit !== null
+                  ? `${Math.abs(fit.scale).toFixed(cfg.scaleDigits)} ${cfg.scaleUnit}${fit.scale < 0 ? " (direction flips)" : ""}` +
+                    (withOffset ? ` · offset ${fit.offset.toFixed(1)} ${u}` : "")
+                  : withOffset ? "record 2+ points" : "record a point"}
               </span>
             </span>
             <button className="btn-primary" onClick={saveFit} disabled={fit === null || !loaded}

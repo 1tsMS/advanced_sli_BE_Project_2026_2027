@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { PlugZap, Unplug, Wifi, WifiOff, RefreshCcw } from "lucide-react";
+import { TippingCard } from "./TippingCard";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -179,6 +180,7 @@ export function SettingsTab({ wsConnected }: SettingsTabProps) {
             </div>
           </div>
         </div>
+        <TippingCard />
       </div>
     </div>
   );

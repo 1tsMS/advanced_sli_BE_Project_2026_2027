@@ -65,11 +65,13 @@ All pins are defined in `config.h`.
 
 | Function | GPIO | Notes |
 |---|---|---|
-| I2C bus 0 SDA / SCL | 21 / 22 | swing AS5600 + MPU6050, 5 us half-bit |
+| I2C bus 0 SDA / SCL | 21 / 22 | MPU6050 only, 5 us half-bit |
 | I2C bus 1 SDA / SCL | 25 / 26 | boom AS5600, 8 us half-bit |
-| I2C bus 2 SDA / SCL | 32 / 33 | telescope AS5600, 4.7k pull-ups |
+| I2C bus 2 SDA / SCL | 15 / 5 | telescope AS5600, 5 us half-bit (strapping pins, held high by the pull-ups) |
+| I2C bus 3 SDA / SCL | 32 / 33 | swing AS5600, 5 us half-bit |
+| (all buses) | | 4.7k pull-ups to 3V3; `test_codes/encoder_bus_test` checks them |
 | HX711 DT / SCK | 17 / 16 | load cell on the boom tip |
-| FSR 1-4 | 34, 35, 36, 39 | outrigger force sensors, ADC1 (input-only pins) |
+| FSR 1-4 (FL, FR, RL, RR) | 34, 35, 39, 36 | outrigger force sensors, ADC1 (input-only pins) |
 | DRV8833 AIN1 / AIN2 | 13 / 14 | winch PWM |
 | DRV8833 EEP (nSLEEP) | 4 | 10k pull-down to GND: driver asleep during boot/flashing, woken by the firmware |
 | N20 encoder A / B | 18 / 19 | PCNT unit 0, 4x quadrature |
@@ -120,7 +122,7 @@ in `rtos_config.h`.
 
 ```
              HwBusTask (core 0)                      SensorTask (core 1)
-  bus0/bus1 ─► swing+boom raw, IMU angles ──_hw──►  encoder maths, telescope (bus2),
+  bus0/1/3 ─► swing+boom raw, IMU angles ──_hw──►  encoder maths, telescope (bus2),
                                          (spinlock)  HX711, FSR, rope ──► SensorData
                                                                          (sensorMutex)
                                                                               │
@@ -339,6 +341,10 @@ reported, so the dashboard can show what the SLI would do.
 | E-stop latch | ESP32 + Mega | `T0`; nothing moves until `RST` |
 | Watchdog | ESP32 | a real-time task stuck 3 s → reset (then the Mega dead-man) |
 
+Swing input shaping (`SHP 1`) never delays any of these: only an operator
+release (`M0 A1` from the dashboard, sent on as `M0 A1 G1`) is shaped. SLI cuts,
+refusals, `T0` and the dead-man stop the swing at once.
+
 All of these are software. There is no hardware E-stop yet (see [Known limits](#11-known-limits)).
 
 ### 6.8 Flash writes
@@ -377,6 +383,13 @@ ever full the line is dropped and counted (shown in DBG) instead of blocking.
 | `CAL0` ... `CAL8` | calibration (section 8) |
 | `DBG` | debug report |
 | `CFG RATE <hz>` | telemetry rate |
+| `SHP 1 [L<mm>]` / `SHP 0` | swing input shaping on (L = pendulum length override) / off |
+
+Swing input shaping is a ZV shaper on the Mega (`mega_executor/zv_shaper.h`):
+every swing speed change is applied as two halves T/2 apart, T = 2π√(L/g) with
+L = hook drop + 25 mm (`SHAPER_LOAD_CG_MM`). The ESP32 sends `I1 P<T/2 ms>` to the
+Mega whenever the hook drop moves T/2 by 10 ms or more, and every 2 s in case the
+Mega reset. Off at every boot.
 
 Speed is steps/s (1-2500). Motion commands must repeat every 100 ms while a
 button is held; that is the dead-man.
@@ -390,6 +403,7 @@ button is held; that is the dead-man.
 | `$ACK,...` | command results (`$ACK,CAL7,OK,...`, `$ACK,SLI,REFUSED,A2,D0,CUT`, `$ACK,LC,COMMITTED,<name>`, ...) |
 | `$D,...` | debug report lines, ending with `$D,END` |
 | `$LC,...` | load chart readback, ending with `$LC,END` (or `$LC,NONE`) |
+| `$SHP` | swing shaping state on change: on (0/1), pendulum length mm, T/2 ms |
 
 `alarmLevel`: 0 OK, 1 WARN, 2 CUT or FAULT, 3 E-stop.
 `blockedHex` bit `(axis-1)*2 + dir` set = that motion is blocked.
@@ -444,6 +458,13 @@ g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 host_tests/test_safety.cpp esp32_ma
 They cover the chart parser and validation, interpolation, swing zones, FAULT,
 the selective cut, the predictive cut, hysteresis, chart-edge limits and the
 "outside the chart" recovery case.
+
+The swing shaper (queue + T/2 math + a pendulum simulation: residual sway with
+and without shaping):
+
+```bash
+g++ -std=c++17 -Wall -Wextra -I mega_executor -I esp32_mainv2 host_tests/test_shaper.cpp -o host_tests/test_shaper && host_tests/test_shaper
+```
 
 ---
 

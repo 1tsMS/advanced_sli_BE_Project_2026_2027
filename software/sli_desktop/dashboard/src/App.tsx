@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   LayoutDashboard, Terminal, Database,
-  Activity, Settings, Zap, Cpu
+  Activity, Settings, Zap, Cpu, UserCheck
 } from "lucide-react";
 import type { TabId } from "./types";
 import { useTelemetry } from "./hooks/useTelemetry";
@@ -15,6 +15,9 @@ import { RecordButton } from "./components/controls/RecordButton";
 import { SliControl, BypassBanner, BlockAlert } from "./components/sli/SliControl";
 import { liveSafety, useNow } from "./components/sli/sliStatus";
 import { LoadChartTab } from "./components/loadchart/LoadChartTab";
+import { DataLoggerTab } from "./components/datalogger/DataLoggerTab";
+import { OperatorTab } from "./components/operator/OperatorTab";
+import { LiftControl } from "./components/controls/LiftControl";
 
 const API_BASE = "http://localhost:8000/api";
 
@@ -22,6 +25,7 @@ const NAV: { id: TabId; icon: React.ReactNode; label: string }[] = [
   { id: "dashboard",  icon: <LayoutDashboard size={16} />, label: "Dashboard" },
   { id: "debug",      icon: <Terminal size={16} />,        label: "Debug & Calibrate" },
   { id: "datalogger", icon: <Database size={16} />,        label: "Data Logger" },
+  { id: "operator",   icon: <UserCheck size={16} />,       label: "Operator Report" },
   { id: "loadchart",  icon: <Activity size={16} />,        label: "Load Chart" },
   { id: "settings",   icon: <Settings size={16} />,        label: "Settings" },
 ];
@@ -46,7 +50,15 @@ export default function App() {
   const [speed, setSpeed] = useState(1000);
 
   const { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus,
-          safety, craneChart, lcResult, sliBlock } = useTelemetry();
+          safety, craneChart, lcResult, sliBlock, history, shaping } = useTelemetry();
+  const [selectedLift, setSelectedLift] = useState<string | null>(null);
+  const [liftsVersion, setLiftsVersion] = useState(0);
+  // A finished lift opens straight in the Data Logger review
+  const onLiftStopped = useCallback((id: string) => {
+    setSelectedLift(id);
+    setLiftsVersion(v => v + 1);
+    setTab("datalogger");
+  }, []);
 
   const alarm = frame?.alarmLevel ?? 0;
   const alarmClass = ALARM_CLASS[alarm];
@@ -148,6 +160,8 @@ export default function App() {
 
           <div className="header-sep" />
 
+          <LiftControl onStopped={onLiftStopped} />
+
           <RecordButton recording={recording} espConnected={espConnected} onChanged={refreshStatus} />
 
           <button className="estop-btn" id="estop-button" onClick={estop}>
@@ -197,7 +211,7 @@ export default function App() {
 
                 {/* Motor controls below */}
                 <div style={{ flexShrink: 0, minHeight: 0 }}>
-                  <MotorControls speed={speed} onSpeedChange={setSpeed} safety={safety} />
+                  <MotorControls speed={speed} onSpeedChange={setSpeed} safety={safety} shaping={shaping} />
                 </div>
               </div>
 
@@ -260,6 +274,13 @@ export default function App() {
                       </div>
                     </div>
 
+                    {frame?.tipValid && frame.tipMargin !== null && frame.tipMargin !== undefined && (
+                      <div className={`tip-readout ${frame.tipWarn ? "warn" : ""}`}
+                           title="Centre of pressure distance to the nearest pad edge (100 % centred, 0 % = about to tip)">
+                        {frame.tipWarn ? "⚠ " : ""}Tipping margin <b>{frame.tipMargin.toFixed(0)} %</b>
+                      </div>
+                    )}
+
                     {/* Balance indicator */}
                     {fsr.some(v => v > 50) && (
                       <div style={{ fontSize: 10, color: "var(--text-muted)", textAlign: "center", marginTop: 4 }}>
@@ -291,30 +312,20 @@ export default function App() {
             <LoadChartTab frame={frame} safety={safety} craneChart={craneChart} lcResult={lcResult} />
           )}
 
-          {/* ===== PLACEHOLDERS ===== */}
+          {/* ===== DATA LOGGER ===== */}
           {tab === "datalogger" && (
-            <PlaceholderTab name={tab} />
+            <DataLoggerTab history={history} selectedLift={selectedLift} onSelectLift={setSelectedLift}
+                           liftsVersion={liftsVersion}
+                           warnPct={craneChart?.chart?.warnPct} cutPct={craneChart?.chart?.cutPct} />
+          )}
+
+          {/* ===== OPERATOR REPORT ===== */}
+          {tab === "operator" && (
+            <OperatorTab selectedLift={selectedLift} onSelectLift={setSelectedLift} liftsVersion={liftsVersion} />
           )}
 
         </div>
       </div>
-    </div>
-  );
-}
-
-function PlaceholderTab({ name }: { name: string }) {
-  const labels: Record<string, string> = {
-    datalogger: "Data Logger",
-  };
-  return (
-    <div style={{
-      flex: 1, display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center",
-      color: "var(--text-muted)", gap: 8,
-    }}>
-      <Database size={32} strokeWidth={1} />
-      <div style={{ fontSize: 13, fontWeight: 600 }}>{labels[name]}</div>
-      <div style={{ fontSize: 11 }}>Coming in Phase 2</div>
     </div>
   );
 }

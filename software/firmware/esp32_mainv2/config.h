@@ -9,19 +9,25 @@
 #include <Arduino.h>
 
 // ======================== I2C BUS PINS ========================
-// Bus 0: Hardware Wire — MPU6050 + AS5600 Swing Encoder
-// MPU6050 confirmed working on GPIO21/22 from mpu_hx711_test.ino
+// All four buses are bit-banged (soft_i2c.h), each with 4.7k pull-ups to 3V3.
+// Bus 0: MPU6050 only (boom tip, 6-pin JST together with the HX711).
+// The swing AS5600 used to share it; it has its own bus 3 now so a swing
+// wiring fault or bus error can't disturb the IMU.
 #define I2C0_SDA  21
 #define I2C0_SCL  22
 
-// Bus 1: Hardware Wire1 — AS5600 Boom Lift Encoder
+// Bus 1: AS5600 Boom Lift Encoder
 #define I2C1_SDA  25
 #define I2C1_SCL  26
 
-// Bus 2: Software bit-bang — AS5600 Telescope only
-// MPU6050 moved to Bus 0 (confirmed working there)
-#define I2C2_SDA  32
-#define I2C2_SCL  33
+// Bus 2: AS5600 Telescope Encoder. GPIO15 and GPIO5 are strapping pins that must
+// be HIGH at reset; the bus pull-ups keep them there.
+#define I2C2_SDA  15
+#define I2C2_SCL  5
+
+// Bus 3: AS5600 Swing Encoder
+#define I2C3_SDA  32
+#define I2C3_SCL  33
 
 // ======================== I2C ADDRESSES ========================
 #define AS5600_ADDR   0x36
@@ -29,8 +35,8 @@
 
 // ======================== HX711 LOAD CELL ========================
 // Pins confirmed from mpu_hx711_test.ino
-#define HX711_DT_PIN         17
-#define HX711_SCK_PIN        16
+#define HX711_DT_PIN         16
+#define HX711_SCK_PIN        17
 // Default calibration factor (counts per kg) from software/test_codes/loadcell_approx/loadcell_approx.ino
 #define HX711_DEFAULT_SCALE  122000.0f
 // Plausible load ceiling for a 5kg model crane (beyond this = uncalibrated or overload error)
@@ -40,8 +46,10 @@
 // ADC1 input-only pins — outrigger force sensors
 #define FSR1_PIN  34
 #define FSR2_PIN  35
-#define FSR3_PIN  36
-#define FSR4_PIN  39
+// FSR3 = rear left, FSR4 = rear right (dashboard order). On the new board the rear
+// pair is wired crossed, so RL is on GPIO39 and RR on GPIO36.
+#define FSR3_PIN  39
+#define FSR4_PIN  36  
 
 // ======================== N20 WINCH VIA DRV8833 ========================
 #define DRV_AIN1  13   // PWM / direction
@@ -156,7 +164,14 @@ struct SensorData {
 
     // System health
     bool sensorsOK;          // true if all expected I2C devices respond
+    uint8_t sensorFault;     // which one is down when !sensorsOK: SENSOR_FAULT_* bits
 };
+
+#define SENSOR_FAULT_SWING  0x01
+#define SENSOR_FAULT_BOOM   0x02
+#define SENSOR_FAULT_TELE   0x04
+#define SENSOR_FAULT_IMU    0x08
+#define SENSOR_FAULT_LOAD   0x10
 
 /**
  * Motor command — parsed from G-code, forwarded to Mega or DRV8833.
@@ -189,6 +204,14 @@ enum CalCommand : uint8_t {
 // Dead-man timeout: a motor keeps running only while its M-command keeps being
 // repeated (dashboard: every 100 ms while held). Same value in mega_executor.ino.
 #define MOTION_TIMEOUT_MS  400
+
+// Swing input shaping (ZV, runs on the Mega). Pendulum length L = hook drop +
+// hook tip to load centre of mass (a guess for small test weights; SHP 1 L<mm>
+// overrides L from the dashboard). T/2 = pi * sqrt(L / g).
+#define SHAPER_LOAD_CG_MM     25.0f
+#define SHAPER_L_MIN_MM       50.0f
+#define SHAPER_L_MAX_MM     1500.0f
+#define SHAPER_RESEND_MS    2000UL   // repeat I1 so a Mega that reset gets it back
 
 // Load % thresholds (match the dashboard: amber at 80 %, red at 100 %)
 #define ALARM_WARN_PERCENT      80.0f

@@ -7,6 +7,7 @@
 #include "serial_out.h"
 #include "persist.h"
 #include "safety_task.h"
+#include "shaper_math.h"
 #include "esp_task_wdt.h"
 
 // Reset reason string, set in setup() (shown in DBG)
@@ -58,15 +59,53 @@ struct ActiveMotion {
 static ActiveMotion _motion[5] = {};     // index = axis, 0 unused
 static uint8_t      _refusedDir[5];      // last refused dir per axis (+1), 0 = none: ACK once per episode
 
-static void stopAxis(uint8_t axis) {
+// ---- Swing input shaping (the shaper itself runs on the Mega) ----
+static bool          _shapeOn       = false;
+static float         _shapeLenOvr   = 0.0f;   // mm, 0 = from the hook drop
+static uint16_t      _shapeSentMs   = 0;      // T/2 last sent to the Mega
+static float         _shapeLenMm    = 0.0f;
+static unsigned long _shapeLastTxMs = 0;
+
+/** Keep the Mega's T/2 in step with the hook drop; resend now and then in case it reset. */
+static void shaperTick(bool force) {
+    if (!_shapeOn || !_mega) return;
+    float hookDrop = NAN;
+    if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(2)) == pdTRUE) {
+        hookDrop = sensorData.hookDropMM;
+        xSemaphoreGive(sensorMutex);
+    }
+    const float    L    = shaper_lengthMm(hookDrop, _shapeLenOvr, SHAPER_LOAD_CG_MM,
+                                          SHAPER_L_MIN_MM, SHAPER_L_MAX_MM);
+    const uint16_t half = shaper_halfPeriodMs(L);
+    const unsigned long now = millis();
+    const bool changed = abs((int)half - (int)_shapeSentMs) >= 10;
+    if (!force && !changed && now - _shapeLastTxMs < SHAPER_RESEND_MS) return;
+    char line[16];
+    snprintf(line, sizeof(line), "I1 P%u", (unsigned)half);
+    _mega->sendRaw(line);
+    _shapeLastTxMs = now;
+    _shapeLenMm    = L;
+    if (force || changed) serialLine("$SHP,1,%.0f,%u", L, (unsigned)half);
+    _shapeSentMs = half;
+}
+
+/**
+ * graceful = the operator let go: a shaped swing then decelerates in two
+ * halves (M0 A1 G1). SLI cuts, refusals and E-stop always stop instantly.
+ */
+static void stopAxis(uint8_t axis, bool graceful = false) {
     if (axis == 4) {
         if (_winch) _winch->stopMotor();
         _winchActive = false;
     } else if (_mega) {
-        MotorCommand stop = {};
-        stop.axis     = 0;
-        stop.stopAxis = axis;
-        _mega->sendMotorCommand(stop);
+        if (graceful && axis == 1 && _shapeOn) {
+            _mega->sendRaw("M0 A1 G1");
+        } else {
+            MotorCommand stop = {};
+            stop.axis     = 0;
+            stop.stopAxis = axis;
+            _mega->sendMotorCommand(stop);
+        }
     }
     _motion[axis].moving = false;
 }
@@ -160,7 +199,7 @@ void commandTask(void* pvParameters) {
                     case CMD_MOTOR: {
                         const uint8_t axis = cmd.motor.axis;
                         if (cmd.motor.speed == 0) {          // S0 = stop, always allowed
-                            stopAxis(axis);
+                            stopAxis(axis, true);
                             break;
                         }
                         const char* why;
@@ -202,9 +241,25 @@ void commandTask(void* pvParameters) {
                             // Stop winch locally
                             if (_winch) _winch->stopMotor();
                             _winchActive = false;
+                        } else if (cmd.motor.stopAxis == 1 && _shapeOn) {
+                            stopAxis(1, true);   // operator release: shaped
                         } else {
                             // Stop stepper axis on Mega
                             if (_mega) _mega->sendMotorCommand(cmd.motor);
+                        }
+                        break;
+                    }
+
+                    case CMD_SHAPE: {
+                        if (cmd.shapeOn) {
+                            _shapeOn     = true;
+                            _shapeLenOvr = cmd.shapeLenMm;
+                            shaperTick(true);   // sends I1 P.. and $SHP
+                        } else {
+                            _shapeOn = false;
+                            if (_mega) _mega->sendRaw("I0");
+                            _motion[1].moving = false;   // the Mega stops the swing on I0
+                            serialLine("$SHP,0,0,0");
                         }
                         break;
                     }
@@ -327,6 +382,9 @@ void commandTask(void* pvParameters) {
         // SLI: stop motions that became blocked while running (SafetyTask
         // notifies on every newly blocked direction; this also runs every 20 ms)
         enforceSafety();
+
+        // Swing shaper period follows the hook drop (winch / telescope change it)
+        shaperTick(false);
 
         // Winch dead-man
         if (_winchActive && (millis() - _lastWinchCmdMs) > MOTION_TIMEOUT_MS) {

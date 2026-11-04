@@ -67,7 +67,7 @@ static float   _loadCalPendingKg = 0.0f;
 static uint32_t _loadCalStartMs = 0;
 static bool    _loadScaleCalibrated = false;
 
-// ---- Hardware-I2C bus task (bus 0: swing AS5600 + MPU6050, bus 1: boom AS5600) ----
+// ---- Hardware-I2C bus task (bus 0: MPU6050, bus 1: boom AS5600, bus 3: swing AS5600) ----
 // The ESP-IDF 4.4 I2C driver inside this Arduino core waits at least 1 s when a
 // transfer hangs (Wire.setTimeOut can't shorten it). Motor noise on the long IMU
 // cable caused exactly that: a ~2 s freeze of the WHOLE sensor loop, telescope
@@ -415,9 +415,18 @@ static void runCal(const CalRequest& req) {
         case CAL_ENC_INVERT: {
             if (req.flag < 0) { serialLine("$ACK,CAL5,ERR,BAD_ARGS"); return; }
             if (req.axis == CAL_AXIS_ROPE) {
+                // Flip the counting direction from HERE: the length shown now stays
+                // the same and only the direction it moves in changes. (Mirroring
+                // around the old zero turned +120 mm into -120 mm, which looked like
+                // a sign flip instead of a direction fix.)
+                const float now = ropeValue();
                 _rope.sign = req.flag ? -1 : 1;
+                _rope.zero = _winchEnc ? _winchEnc->getCount() : 0;
+                _rope.ref  = now;
+                savePosition(ENC_COUNT);
                 saveRope();
-                serialLine("$ACK,CAL5,A4,ROPE,OK,INV:%u", req.flag ? 1 : 0);
+                _lastSavedValue[ENC_COUNT] = now;
+                serialLine("$ACK,CAL5,A4,ROPE,OK,INV:%u,VALUE:%.2f", req.flag ? 1 : 0, now);
                 return;
             }
             if (req.axis >= ENC_COUNT) { serialLine("$ACK,CAL5,ERR,BAD_AXIS"); return; }
@@ -473,6 +482,8 @@ static void runCal(const CalRequest& req) {
 
         case CAL_ROPE_SCALE: {
             if (!(req.value > 0.0f && req.value < 10.0f)) { serialLine("$ACK,CAL6,ERR,RANGE"); return; }
+            // Scales around the last reference point (CAL4 A4 / CAL5 A4). The
+            // dashboard's ruler fit sends CAL4 A4 V<measured> right after this.
             _rope.scale = req.value;
             saveRope();
             serialLine("$ACK,CAL6,ROPE_SAVED,SCALE:%.6f,INV:%u", _rope.scale, _rope.sign < 0 ? 1 : 0);
@@ -499,7 +510,7 @@ void sensorTask_hwBus(void* pvParameters) {
         esp_task_wdt_reset();
         runImuCalibration();             // non-blocking state machine
 
-        // Swing (bus 0) and boom (bus 1) encoders: raw angle only
+        // Swing (bus 3) and boom (bus 1) encoders: raw angle only
         for (uint8_t i = 0; i < 2; i++) {
             uint16_t raw;
             if (_enc[i] && _enc[i]->readRaw(&raw)) {
@@ -743,15 +754,17 @@ void sensorTask(void* pvParameters) {
             // safeLoadLimit / loadPercent / alarmLevel belong to SafetyTask
 
             // System health check (cached flags only: no bus traffic here)
-            sensorData.sensorsOK = (
-                (_enc[ENC_SWING] ? _enc[ENC_SWING]->isConnected() : true) &&
-                (_enc[ENC_BOOM]  ? _enc[ENC_BOOM]->isConnected()  : true) &&
-                (_enc[ENC_TELE]  ? _enc[ENC_TELE]->isConnected()  : true) &&
-                (_imu            ? imuOK                          : true) &&
-                // A dead HX711 never clears isConnected(): it just stops converting
-                // and getWeight() keeps returning the last value. Stale = fault.
-                (_loadCell       ? (_loadCell->isConnected() && _loadCell->isFresh(LOAD_STALE_MS)) : true)
-            );
+            uint8_t fault = 0;
+            if (_enc[ENC_SWING] && !_enc[ENC_SWING]->isConnected()) fault |= SENSOR_FAULT_SWING;
+            if (_enc[ENC_BOOM]  && !_enc[ENC_BOOM]->isConnected())  fault |= SENSOR_FAULT_BOOM;
+            if (_enc[ENC_TELE]  && !_enc[ENC_TELE]->isConnected())  fault |= SENSOR_FAULT_TELE;
+            if (_imu && !imuOK)                                     fault |= SENSOR_FAULT_IMU;
+            // A dead HX711 never clears isConnected(): it just stops converting
+            // and getWeight() keeps returning the last value. Stale = fault.
+            if (_loadCell && !(_loadCell->isConnected() && _loadCell->isFresh(LOAD_STALE_MS)))
+                fault |= SENSOR_FAULT_LOAD;
+            sensorData.sensorFault = fault;
+            sensorData.sensorsOK   = (fault == 0);
 
             // Diagnostics for DBG
             for (uint8_t i = 0; i < ENC_COUNT; i++) {

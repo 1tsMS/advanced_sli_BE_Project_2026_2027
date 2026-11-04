@@ -22,6 +22,8 @@
 //    SLI BYPASS 300  → Disable the motion cut for 300 s (max 600; E-stop still works)
 //    SLI OFF         → Disable the motion cut until SLI ON or reboot (E-stop still works)
 //    RST             → Clear a latched E-stop
+//    SHP 1 [L<mm>]   → Swing input shaping on (L = pendulum length override, 0/omitted = from hook drop)
+//    SHP 0           → Swing input shaping off
 // ============================================================
 #ifndef GCODE_PARSER_H
 #define GCODE_PARSER_H
@@ -51,7 +53,8 @@ enum CommandType {
     CMD_CONFIG,        // CFG
     CMD_LOADCHART,     // LC ...
     CMD_SLI,           // SLI ON / SLI BYPASS <s>
-    CMD_RESET          // RST
+    CMD_RESET,         // RST
+    CMD_SHAPE          // SHP 0 / SHP 1 [L<mm>]
 };
 
 /**
@@ -75,6 +78,8 @@ struct ParsedCommand {
     const char*  args;        // CMD_LOADCHART: text after "LC" (points into the caller's line)
     uint16_t     bypassS;     // CMD_SLI: bypass seconds, 0 = arm
     bool         sliOff;      // CMD_SLI: SLI OFF
+    bool         shapeOn;     // CMD_SHAPE
+    float        shapeLenMm;  // CMD_SHAPE: pendulum length override, 0 = from hook drop
 };
 
 class GCodeParser {

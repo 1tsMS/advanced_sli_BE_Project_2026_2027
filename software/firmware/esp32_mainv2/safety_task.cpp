@@ -179,6 +179,20 @@ void safety_handleLc(const char* args) {
 
 // ======================== TASK ========================
 
+/** "SENSOR:IMU+LOAD" style text for the $S line. */
+static void reasonText(SliReason r, uint8_t fault, char* out, size_t len) {
+    if (r != SLI_WHY_SENSOR) { snprintf(out, len, "%s", sli_reasonName(r)); return; }
+    static const char* NAMES[5] = { "SWING", "BOOM", "TELE", "IMU", "LOAD" };
+    int pos = snprintf(out, len, "SENSOR");
+    char sep = ':';
+    for (uint8_t i = 0; i < 5 && pos > 0 && pos < (int)len; i++) {
+        if (fault & (1u << i)) {
+            pos += snprintf(out + pos, len - pos, "%c%s", sep, NAMES[i]);
+            sep = '+';
+        }
+    }
+}
+
 static uint8_t alarmLevelFor(SliState s, bool estop) {
     if (estop) return 3;
     switch (s) {
@@ -216,12 +230,14 @@ void safetyTask(void* pvParameters) {
         // Pose + load. If the mutex is busy, fail safe: treat the sensors as down.
         SafetyInputs in = {};
         in.sensorsOK = false;
+        uint8_t sensorFault = 0;      // mutex busy: sensorsOK stays false, names unknown
         if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             in.boomDeg   = sensorData.boomAngle;
             in.extMm     = sensorData.extensionMM;
             in.swingDeg  = sensorData.swingAngle;
             in.loadKg    = sensorData.actualLoadKg;
             in.sensorsOK = sensorData.sensorsOK;
+            sensorFault  = sensorData.sensorFault;
             xSemaphoreGive(sensorMutex);
         }
 
@@ -253,12 +269,15 @@ void safetyTask(void* pvParameters) {
         const bool changed = r.state != prevState || r.blocked != prevBlocked ||
                              estop != prevEstop || bypass != prevBypass || off != prevOff;
         if (changed || cycle % SAFETY_STATUS_EVERY == 0) {
+            // Why: "-", NO_CHART, LOAD_RANGE, BAD_VALUE, OUTSIDE, or SENSOR:<names joined by +>
+            char why[48];
+            reasonText(r.reason, sensorFault, why, sizeof(why));
             // State and blocked mask are what the SLI WOULD do; mode says whether it is enforced
-            serialLine("$S,%s,%.1f,%.3f,%d,%lu,%02X,%s,%s",
+            serialLine("$S,%s,%.1f,%.3f,%d,%lu,%02X,%s,%s,%s",
                        estop ? "ESTOP" : sli_stateName(r.state),
                        r.pct, r.capKg, (int)r.zone, (unsigned long)bypassLeftS,
                        (unsigned)r.blocked, chartValid ? chart.name : "NONE",
-                       off ? "OFF" : bypass ? "BYPASS" : "ARMED");
+                       off ? "OFF" : bypass ? "BYPASS" : "ARMED", why);
         }
 
         prevState   = r.state;

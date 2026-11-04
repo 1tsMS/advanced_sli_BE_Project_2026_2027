@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <ctype.h>
+#include "zv_shaper.h"
 
 // ======================== RAMPS 1.4 PIN DEFINITIONS ========================
 // X-axis: Swing
@@ -60,11 +61,28 @@ struct StepperState {
 
 StepperState motors[3] = {
     // pins                          accel (steps/s^2)
-    {SWING_STEP, SWING_DIR, SWING_EN,     0.0f, false, 0, 0, 0, 1000, 0, 0},  // M1 = Swing (no ramp: input shaping on ESP32 later)
+    {SWING_STEP, SWING_DIR, SWING_EN,     0.0f, false, 0, 0, 0, 1000, 0, 0},  // M1 = Swing (no ramp: ZV input shaping below)
     {LIFT_STEP,  LIFT_DIR,  LIFT_EN,   1500.0f, false, 0, 0, 0, 1000, 0, 0},  // M2 = Lift   <- TUNE HERE
     {TELE_STEP,  TELE_DIR,  TELE_EN,      0.0f, false, 0, 0, 0, 1000, 0, 0}   // M3 = Telescope (no ramp)
 };
 unsigned long lastRampUs = 0;
+
+// ======================== INPUT SHAPING (swing only) ========================
+// Zero-vibration (ZV) shaper on the swing speed reference. Every change of the
+// commanded speed is applied in two equal halves: half now, half T/2 later
+// (T = pendulum period of the hanging load). The sway the first half excites
+// is cancelled by the second half, so the load arrives without residual swing.
+// For an undamped pendulum ZV = two impulses of 0.5 at 0 and T/2.
+//   I1 P<ms>   shaping on, P = T/2 in ms (the ESP32 computes it from the hook drop)
+//   I0         shaping off
+// Shaped: starts, speed changes and operator releases (M0 A1 G1).
+// NOT shaped: E-stop (T0), SLI cuts and plain M0 A1, dead-man. Those stop now.
+// The queue math lives in zv_shaper.h (unit-tested on the PC).
+#define SHAPER_MIN_MS   50UL
+#define SHAPER_MAX_MS 1000UL
+
+bool     shapeOn = false;
+ZvShaper shaper;     // signed swing speed reference, + = DIR HIGH (D1)
 
 // ======================== SERIAL BUFFERS ========================
 // One line buffer per port: with a shared buffer, a byte arriving on USB
@@ -118,11 +136,17 @@ void loop() {
     // 2. Dead-man watchdog: stop any axis whose command stream went quiet
     unsigned long nowMs = millis();
     for (int i = 0; i < 3; i++) {
-        if (motors[i].running && (nowMs - motors[i].lastCmdMs) > MOTION_TIMEOUT_MS) {
+        // A shaped swing finishing its release tail (reference already 0) gets
+        // no more commands by design; it ends by itself within T/2.
+        const bool held = (i == 0 && shapeOn) ? (shaper.ref() != 0.0f) : motors[i].running;
+        if (held && (nowMs - motors[i].lastCmdMs) > MOTION_TIMEOUT_MS) {
             hardStop(motors[i]);
             Serial.print("WATCHDOG stopped axis "); Serial.println(i + 1);
         }
     }
+
+    // 2b. Shaped swing: apply the delayed half of the reference when it is due
+    if (shapeOn) shaperUpdate(nowMs);
 
     // 3. Ramp speeds toward their targets
     unsigned long now = micros();
@@ -163,6 +187,35 @@ void hardStop(StepperState& m) {
     m.running   = false;
     m.curSps    = 0.0f;
     m.targetSps = 0.0f;
+    if (&m == &motors[0]) shaper.reset();   // drop any pending shaped half
+}
+
+// ======================== SHAPER ========================
+/** New swing reference: the first half applies now, the second T/2 later. */
+void shaperSetRef(float ref, unsigned long nowMs) {
+    shaper.setRef(ref, nowMs);
+    shaperUpdate(nowMs);
+}
+
+/** Writes the shaped swing speed to the motor. */
+void shaperUpdate(unsigned long nowMs) {
+    StepperState& m = motors[0];
+    const float out = shaper.update(nowMs);
+    if (out == 0.0f) {          // reversal midpoint or end of a release tail
+        m.running = false;
+        m.curSps = m.targetSps = 0.0f;
+        return;
+    }
+    const uint8_t dir = out > 0.0f ? 1 : 0;
+    const float   sps = fabs(out);
+    if (!m.running || m.direction != dir) {
+        m.direction = dir;
+        digitalWrite(m.dirPin, dir ? HIGH : LOW);
+        m.running = true;
+        m.lastStepTime = micros();
+    }
+    m.curSps = m.targetSps = sps;
+    m.speed  = (uint32_t)(1000000.0f / sps);
 }
 
 // ======================== COMMAND PARSER ========================
@@ -175,9 +228,29 @@ void processCommand(const char* cmd) {
         return;
     }
 
-    // --- M0 Ax: Stop specific axis ---
+    // --- I1 P<ms> / I0: swing input shaping on / off ---
+    if (cmd[0] == 'I' && (cmd[1] == '0' || cmd[1] == '1')) {
+        if (cmd[1] == '0') {
+            if (shapeOn) hardStop(motors[0]);   // never leave a half-applied reference behind
+            shapeOn = false;
+        } else {
+            unsigned long p = (unsigned long)extractParam(cmd, 'P', 0);
+            if (p < SHAPER_MIN_MS) p = SHAPER_MIN_MS;
+            if (p > SHAPER_MAX_MS) p = SHAPER_MAX_MS;
+            if (!shapeOn) hardStop(motors[0]);  // switching on mid-motion: start clean
+            shapeOn = true;
+            shaper.setHalfPeriod(p);            // the ESP32 repeats this as the hook drop changes
+        }
+        return;
+    }
+
+    // --- M0 Ax: Stop specific axis (instant). M0 A1 G1 = operator release, shaped ---
     if (cmd[0] == 'M' && cmd[1] == '0') {
         int axis = extractParam(cmd, 'A', 0);
+        if (axis == 1 && shapeOn && extractParam(cmd, 'G', 0) == 1) {
+            shaperSetRef(0.0f, millis());
+            return;
+        }
         if (axis >= 1 && axis <= 3) {
             hardStop(motors[axis - 1]);
             Serial.print("Stopped axis "); Serial.println(axis);
@@ -202,6 +275,17 @@ void processCommand(const char* cmd) {
         }
 
         const uint8_t newDir = dir ? 1 : 0;
+
+        if (idx == 0 && shapeOn) {     // shaped swing: the shaper owns the motor
+            m.lastCmdMs = millis();
+            if (shaper.ref() == 0.0f) {
+                Serial.print("M1 S"); Serial.print(speed);
+                Serial.print(" D"); Serial.print(dir); Serial.println(" shaped");
+            }
+            shaperSetRef(newDir ? (float)speed : -(float)speed, m.lastCmdMs);
+            return;
+        }
+
         // A direction change while moving restarts the axis from standstill
         const bool wasRunning = m.running && (m.direction == newDir);
         m.targetSps = (float)speed;

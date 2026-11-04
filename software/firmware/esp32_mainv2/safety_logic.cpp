@@ -35,19 +35,25 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
     r.capKg   = 0.0f;
     r.zone    = -1;
     r.blocked = 0;
+    r.reason  = SLI_WHY_NONE;
 
-    const bool inputsOK = in.sensorsOK &&
-                          isfinite(in.boomDeg) && isfinite(in.extMm) && isfinite(in.swingDeg) &&
-                          isfinite(in.loadKg) && in.loadKg <= SLI_MAX_LOAD_KG;
-    if (!chart || !inputsOK) {
+    const bool finite = isfinite(in.boomDeg) && isfinite(in.extMm) && isfinite(in.swingDeg) &&
+                        isfinite(in.loadKg);
+    if      (!chart)                         r.reason = SLI_WHY_NO_CHART;
+    else if (!in.sensorsOK)                  r.reason = SLI_WHY_SENSOR;
+    else if (!finite)                        r.reason = SLI_WHY_BAD_VALUE;
+    else if (in.loadKg > SLI_MAX_LOAD_KG)    r.reason = SLI_WHY_LOAD;
+    if (r.reason != SLI_WHY_NONE) {
         // Everything except the motions that always reduce the load moment
         r.blocked = (uint8_t)~(sli_bit(2, 1) | sli_bit(3, 0) | sli_bit(4, 1 - SLI_WINCH_HOIST_DIR));
+        if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
         return r;
     }
 
     const LoadChart& c = *chart;
     r.pct   = pctAt(c, in.loadKg, in.boomDeg, in.extMm, in.swingDeg, &r.capKg, &r.zone);
     r.state = nextState(prev, r.pct, c.warnPct, c.cutPct);
+    if (!(r.capKg > 0.0f)) r.reason = SLI_WHY_OUTSIDE;
 
     // Geometric axes: check one step ahead in each direction
     const float swingStep = SLI_LOOK_SWING_DEG * (float)SLI_SWING_D1_SIGN;
@@ -65,6 +71,7 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
 
     // Hoisting can only add load: cut it while overloaded
     if (r.state == SLI_CUT) r.blocked |= sli_bit(4, SLI_WINCH_HOIST_DIR);
+    if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
     if (r.pct > SLI_PCT_MAX) r.pct = SLI_PCT_MAX;   // the distance term is internal only
     return r;
 }
@@ -75,5 +82,16 @@ const char* sli_stateName(SliState s) {
         case SLI_WARN:  return "WARN";
         case SLI_CUT:   return "CUT";
         default:        return "FAULT";
+    }
+}
+
+const char* sli_reasonName(SliReason r) {
+    switch (r) {
+        case SLI_WHY_NO_CHART:  return "NO_CHART";
+        case SLI_WHY_SENSOR:    return "SENSOR";
+        case SLI_WHY_LOAD:      return "LOAD_RANGE";
+        case SLI_WHY_BAD_VALUE: return "BAD_VALUE";
+        case SLI_WHY_OUTSIDE:   return "OUTSIDE";
+        default:                return "-";
     }
 }

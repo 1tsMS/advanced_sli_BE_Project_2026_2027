@@ -123,7 +123,8 @@ static void test_fault() {
     SafetyResult r = sli_evaluate(nullptr, pose(10, 40, 0, 0.1f), SLI_OK);
     CHECK(r.state == SLI_FAULT);
     CHECK(!blocked(r, 2, 1) && !blocked(r, 3, 0) && !blocked(r, 4, 1));   // boom up, retract, pay out
-    CHECK(blocked(r, 2, 0) && blocked(r, 3, 1) && blocked(r, 4, 0));      // boom down, extend, hoist
+    CHECK(!blocked(r, 2, 0));                                             // boom down: never cut
+    CHECK(blocked(r, 3, 1) && blocked(r, 4, 0));                          // extend, hoist
     CHECK(blocked(r, 1, 0) && blocked(r, 1, 1));                          // swing
 
     const LoadChart c = buildChart();
@@ -147,7 +148,7 @@ static void test_cut_selective() {
     const LoadChart c = buildChart();
     const SafetyResult r = sli_evaluate(&c, pose(10, 40, 0, 0.6f), SLI_WARN);  // exactly 100 %
     CHECK(r.state == SLI_CUT);
-    CHECK(blocked(r, 2, 0));      // boom down: radius grows
+    CHECK(!blocked(r, 2, 0));     // boom down: never cut (SLI_BOOM_DOWN_ALWAYS)
     CHECK(!blocked(r, 2, 1));     // boom up: recovery allowed
     CHECK(blocked(r, 3, 1));      // extend
     CHECK(!blocked(r, 3, 0));     // retract allowed
@@ -161,7 +162,8 @@ static void test_predictive() {
     // 99 %: not yet CUT, but one degree down crosses 100 %
     const SafetyResult r = sli_evaluate(&c, pose(10, 40, 0, 0.594f), SLI_OK);
     CHECK(r.state == SLI_WARN);
-    CHECK(blocked(r, 2, 0));
+    CHECK(!blocked(r, 2, 0));     // boom down: never cut
+    CHECK(blocked(r, 3, 1));      // extending 2 mm crosses 100 %: cut ahead of time
     CHECK(!blocked(r, 2, 1));
     CHECK(!blocked(r, 4, 0));     // hoist only cut in CUT state
 }
@@ -176,10 +178,10 @@ static void test_hysteresis() {
 
 static void test_soft_limits() {
     const LoadChart c = buildChart();
-    // Empty hook at the bottom edge of the chart: lowering further is cut
+    // Empty hook at the bottom edge of the chart: boom down is never cut (no soft limit)
     SafetyResult r = sli_evaluate(&c, pose(-0.5f, 40, 0, 0.0f), SLI_OK);
     CHECK(r.state == SLI_OK);
-    CHECK(blocked(r, 2, 0));
+    CHECK(!blocked(r, 2, 0));
     CHECK(!blocked(r, 2, 1));
     // Fully extended (last column + inside the 2 mm tolerance band): extending
     // further is cut, retracting is fine. The limit sits at max + LC_TOL_MM.
@@ -197,7 +199,8 @@ static void test_outside_not_stuck() {
     CHECK(r.state == SLI_CUT);
     CHECK_NEAR(r.pct, SLI_PCT_MAX, 1e-3);
     CHECK(!blocked(r, 2, 1));     // boom up: toward the chart
-    CHECK(blocked(r, 2, 0));      // boom down: further out
+    CHECK(!blocked(r, 2, 0));     // boom down: never cut, even further out
+    CHECK(blocked(r, 3, 1));      // extend: still cut out here
 }
 
 static void test_swing_zone() {
@@ -207,6 +210,37 @@ static void test_swing_zone() {
     CHECK(r.state == SLI_OK);
     CHECK(blocked(r, 1, 1));      // toward the rear zone (D1 = +angle)
     CHECK(!blocked(r, 1, 0));     // away from it
+}
+
+static void test_reason() {
+    const LoadChart c = buildChart();
+    CHECK(sli_evaluate(nullptr, pose(10, 40, 0, 0.1f), SLI_OK).reason == SLI_WHY_NO_CHART);
+    SafetyInputs in = pose(10, 40, 0, 0.1f);
+    in.sensorsOK = false;
+    CHECK(sli_evaluate(&c, in, SLI_OK).reason == SLI_WHY_SENSOR);
+    CHECK(sli_evaluate(&c, pose(10, 40, 0, 25.0f), SLI_OK).reason == SLI_WHY_LOAD);
+    CHECK(sli_evaluate(&c, pose(NAN, 40, 0, 0.1f), SLI_OK).reason == SLI_WHY_BAD_VALUE);
+    CHECK(sli_evaluate(&c, pose(-5, 40, 0, 0.0f), SLI_OK).reason == SLI_WHY_OUTSIDE);
+    const SafetyResult ok = sli_evaluate(&c, pose(10, 40, 0, 0.0f), SLI_OK);
+    CHECK(ok.reason == SLI_WHY_NONE && ok.blocked == 0);           // no load, mid-chart: all free
+    CHECK(std::strcmp(sli_reasonName(SLI_WHY_OUTSIDE), "OUTSIDE") == 0);
+}
+
+/** MS's case: capacity falls as the boom rises (motor stall limit). With 1 kg, boom up
+ *  must run until just before the angle where 1 kg is 100 %, then stop; down stays free. */
+static void test_lift_until_limit() {
+    LoadChart c = buildChart();
+    c.nZ = 0;
+    // rows 0, 10, 20, 30 deg: 1.2, 0.9, 0.8, 0.7 kg at every extension
+    const float rows[4] = {1.2f, 0.9f, 0.8f, 0.7f};
+    for (uint8_t i = 0; i < c.nA; i++) for (uint8_t j = 0; j < c.nE; j++) c.capKg[i][j] = rows[i];
+    // 1 kg = 100 % at 6.67 deg; the 1 deg look-ahead cuts boom up from ~5.67 deg
+    SafetyResult r = sli_evaluate(&c, pose(5.0f, 40, 0, 1.0f), SLI_OK);
+    CHECK(r.state != SLI_CUT && !blocked(r, 2, 1));
+    r = sli_evaluate(&c, pose(6.0f, 40, 0, 1.0f), SLI_OK);
+    CHECK(blocked(r, 2, 1));      // boom up cut before 6.67 deg
+    CHECK(!blocked(r, 2, 0));     // boom down allowed (capacity rises)
+    CHECK(!blocked(r, 3, 0) && !blocked(r, 3, 1));   // extension doesn't change capacity here
 }
 
 int main() {
@@ -222,6 +256,8 @@ int main() {
     test_soft_limits();
     test_outside_not_stuck();
     test_swing_zone();
+    test_reason();
+    test_lift_until_limit();
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -32,9 +32,9 @@ interface SliControlProps {
 }
 
 /**
- * Header SLI switch. The ESP32 enforces; this only shows its state and asks
- * for a timed bypass (with a confirm), a re-arm (no confirm: it is the safe
- * direction) or an E-stop reset.
+ * Header SLI switch. The ESP32 enforces; this only shows its state and opens
+ * the mode menu (arm / timed bypass / off), which is reachable in every state,
+ * plus an E-stop reset while latched.
  */
 export function SliControl({ safety }: SliControlProps) {
   const [confirming, setConfirming] = useState(false);
@@ -87,33 +87,45 @@ export function SliControl({ safety }: SliControlProps) {
         <span className="sli-chip-v">{chipText}</span>
       </div>
 
-      {state === "ESTOP" ? (
+      {state === "ESTOP" && (
         <button className="sli-btn reset" onClick={() => run("/sli/reset")} title="Clear the latched E-stop (RST)">
           <RotateCcw size={12} /> RESET
         </button>
-      ) : mode === "OFF" ? (
-        <button className="sli-btn disarmed" onClick={() => run("/sli/arm", undefined, "ARMED")} title="Turn the SLI back on">
-          <ShieldOff size={12} /> SLI OFF · turn on
-        </button>
-      ) : mode === "BYPASS" ? (
-        <button className="sli-btn disarmed" onClick={() => run("/sli/arm", undefined, "ARMED")} title="Re-arm the SLI now">
-          <ShieldOff size={12} /> BYPASS <span className="sli-left">{fmtLeft(bypassLeft)}</span>
-        </button>
-      ) : (
-        <button className="sli-btn armed" disabled={!s} aria-expanded={confirming}
-                onClick={() => setConfirming(c => !c)}
-                title={s ? "SLI armed: click to bypass or turn it off" : "No SLI status from the ESP32"}>
-          <ShieldCheck size={12} /> ARMED
-        </button>
       )}
 
+      {/* Always clickable, in every state (FAULT, E-stop, no status): the mode menu
+          is how you get the crane moving again when a sensor is down. */}
+      <button className={`sli-btn ${mode === "ARMED" ? "armed" : "disarmed"}`} aria-expanded={confirming}
+              onClick={() => setConfirming(c => !c)}
+              title={!s ? "No SLI status from the ESP32: the menu still sends the command"
+                        : mode === "ARMED" ? "SLI armed: click to bypass or turn it off"
+                        : "SLI not enforcing: click to turn it on, or change the mode"}>
+        {mode === "ARMED"
+          ? <><ShieldCheck size={12} /> ARMED</>
+          : mode === "OFF"
+            ? <><ShieldOff size={12} /> SLI OFF</>
+            : <><ShieldOff size={12} /> BYPASS <span className="sli-left">{fmtLeft(bypassLeft)}</span></>}
+      </button>
+
       {confirming && (
-        <div className="sli-pop" role="dialog" aria-label="Disable the SLI">
-          <div className="sli-pop-title">Stop the SLI cutting motion?</div>
-          <div className="sli-pop-body">
-            Overload and chart limits will no longer stop the motors. E-stop and the 400 ms
-            dead-man stay active either way.
-          </div>
+        <div className="sli-pop" role="dialog" aria-label="SLI mode">
+          {mode !== "ARMED" && (
+            <>
+              <div className="sli-pop-title">SLI is {mode === "OFF" ? "off" : "bypassed"}</div>
+              <div className="sli-pop-row">
+                <button className="sli-pop-opt" onClick={() => run("/sli/arm", undefined, "ARMED")}>Turn SLI on (arm)</button>
+              </div>
+            </>
+          )}
+          {mode === "ARMED" && (
+            <>
+              <div className="sli-pop-title">Stop the SLI cutting motion?</div>
+              <div className="sli-pop-body">
+                Overload, chart limits and sensor faults will no longer stop the motors. E-stop
+                and the 400 ms dead-man stay active either way.
+              </div>
+            </>
+          )}
           <div className="sli-pop-k">Bypass for a while (re-arms by itself)</div>
           <div className="sli-pop-row">
             {BYPASS_OPTIONS.map(o => (
@@ -124,7 +136,9 @@ export function SliControl({ safety }: SliControlProps) {
           </div>
           <div className="sli-pop-k">Or turn it off (until you turn it on, or the ESP32 reboots)</div>
           <div className="sli-pop-row">
-            <button className="sli-pop-opt off" onClick={() => run("/sli/off", undefined, "OFF")}>Turn SLI off</button>
+            {mode !== "OFF" && (
+              <button className="sli-pop-opt off" onClick={() => run("/sli/off", undefined, "OFF")}>Turn SLI off</button>
+            )}
             <button className="btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
           </div>
         </div>

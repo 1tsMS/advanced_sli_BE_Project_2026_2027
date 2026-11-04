@@ -1,7 +1,7 @@
 #include "HX711.h"
 
-#define DT 17
-#define SCK 16
+#define DT 16
+#define SCK 17
 
 HX711 scale;
 

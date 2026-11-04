@@ -21,12 +21,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sli_backend.config.settings import (
-    API_HOST, API_PORT, CORS_ORIGINS
+    API_HOST, API_PORT, CORS_ORIGINS, LOG_DIR, PROFILE_DIR
 )
 from sli_backend.core.serial_manager import SerialManager
 from sli_backend.core.packet_parser import PacketParser
 from sli_backend.core.command_router import CommandRouter
 from sli_backend.core.session_logger import SessionLogger
+from sli_backend.core.lift_recorder import LiftRecorder
+from sli_backend.core.tipping import TippingStore
 from sli_backend.api.models import TelemetryFrame, DebugReport, SafetyStatus
 from sli_backend.api.ws_endpoint import (
     telemetry_websocket_endpoint,
@@ -35,8 +37,10 @@ from sli_backend.api.ws_endpoint import (
     broadcast_ack,
     broadcast_safety,
     broadcast_chart,
+    ws_manager,
 )
 from sli_backend.api.rest_endpoints import router as rest_router, init_endpoints, set_safety_status
+from sli_backend.api.lift_endpoints import router as lift_router, init_lift_endpoints
 
 # ======================== LOGGING ========================
 logging.basicConfig(
@@ -51,6 +55,10 @@ serial_mgr   = SerialManager()
 cmd_router   = CommandRouter(serial_mgr)
 session_log  = SessionLogger()
 pkt_parser   = PacketParser()
+lift_rec     = LiftRecorder(LOG_DIR, PROFILE_DIR)
+tip_store    = TippingStore(PROFILE_DIR / "tipping.json")
+lift_rec.tip_warn_pct = tip_store.cfg.warnPct
+cmd_router.on_sent = lift_rec.on_command
 
 # ======================== FASTAPI APP ========================
 app = FastAPI(
@@ -70,6 +78,7 @@ app.add_middleware(
 
 # Register routes
 app.include_router(rest_router)
+app.include_router(lift_router)
 app.add_api_websocket_route("/ws/telemetry", telemetry_websocket_endpoint)
 
 # ======================== STARTUP / SHUTDOWN ========================
@@ -81,6 +90,7 @@ async def startup() -> None:
 
     # Inject serial + logging into REST endpoints
     init_endpoints(serial_mgr, cmd_router, session_log)
+    init_lift_endpoints(lift_rec, tip_store, cmd_router)
 
     # USB unplugged / COM port died: close any open recording right away
     serial_mgr.on_disconnect = _on_serial_lost
@@ -92,6 +102,7 @@ async def startup() -> None:
         on_ack=_on_ack,
         on_safety=_on_safety,
         on_chart=_on_chart,
+        on_shaping=_on_shaping,
     )
 
     # Launch background packet processing loop
@@ -106,6 +117,8 @@ async def shutdown() -> None:
     """Graceful cleanup."""
     if session_log.is_active:
         session_log.end_session()
+    if lift_rec.active:
+        lift_rec.stop()
     if serial_mgr.is_connected:
         await serial_mgr.disconnect()
     logger.info("=== Backend shutdown complete ===")
@@ -141,15 +154,21 @@ async def packet_processing_loop() -> None:
 
 def _on_telemetry(frame: TelemetryFrame) -> None:
     """Called by PacketParser when a $T frame is decoded."""
+    # Tipping margin from the 4 FSRs (backend-side, warn only)
+    tip = tip_store.update(frame.fsr)
+    frame.tipValid, frame.tipMargin = tip["valid"], tip["marginPct"]
+    frame.copX, frame.copY, frame.tipWarn = tip["copX"], tip["copY"], tip["warn"]
     # Fire and forget — schedule broadcast
     asyncio.create_task(broadcast_telemetry(frame))
     # Log to CSV
     session_log.log_frame(frame)
+    lift_rec.on_frame(frame, tip)
 
 
 def _on_serial_lost(reason: str) -> None:
     """Called by SerialManager when the port drops without a disconnect request."""
     logger.warning(f"ESP32 link lost ({reason})")
+    lift_rec.shaping = False           # the ESP32 boots with shaping off
     if session_log.is_active:
         session_log.end_session()
 
@@ -161,13 +180,21 @@ def _on_debug(report: DebugReport) -> None:
 
 def _on_ack(ack_line: str) -> None:
     """Called by PacketParser when a $ACK line is received."""
+    lift_rec.on_ack(ack_line)
     asyncio.create_task(broadcast_ack(ack_line))
 
 
 def _on_safety(status: SafetyStatus) -> None:
     """Called by PacketParser for every $S line (SLI state)."""
     set_safety_status(status)          # so GET /api/sli answers before the next $S
+    lift_rec.on_safety(status)
     asyncio.create_task(broadcast_safety(status))
+
+
+def _on_shaping(shp: dict) -> None:
+    """Called for every $SHP line (swing input shaping state from the ESP32)."""
+    lift_rec.shaping = shp["on"]
+    asyncio.create_task(ws_manager.broadcast({"type": "shaping", **shp}))
 
 
 def _on_chart(chart: dict) -> None:

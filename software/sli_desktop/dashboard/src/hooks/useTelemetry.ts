@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import type { TelemetryFrame, DebugReport, RecordingState, SafetyStatus, LoadChartProfile } from "../types";
+import { useState, useEffect, useRef, useCallback, type RefObject } from "react";
+import type { TelemetryFrame, DebugReport, RecordingState, SafetyStatus, LoadChartProfile, LivePoint, ShapingState } from "../types";
 
 const WS_URL = "ws://localhost:8000/ws/telemetry";
 const STATUS_URL = "http://localhost:8000/api/status";
 const RECONNECT_DELAY = 3000;
+const HISTORY_S = 60;          // rolling window kept for the live charts
 
 export type WsStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -26,6 +27,11 @@ interface UseTelemetryReturn {
   lcResult: { text: string; seq: number };
   /** Last motion the SLI refused or cut ($ACK,SLI,REFUSED / CUT,...); seq counts up per event. */
   sliBlock: { text: string; seq: number };
+  /** Last HISTORY_S seconds of telemetry, oldest first. A ref (not state): the live
+   *  charts read it on their own timer, so 50 Hz frames don't re-render them. */
+  history: RefObject<LivePoint[]>;
+  /** Swing input shaping as last reported by the ESP32 (null = not reported since connect). */
+  shaping: ShapingState | null;
 }
 
 const NOT_RECORDING: RecordingState = { recording: false, file: null, rows: 0, elapsedSec: 0 };
@@ -48,6 +54,8 @@ export function useTelemetry(): UseTelemetryReturn {
   const [craneChart, setCraneChart] = useState<UseTelemetryReturn["craneChart"]>(undefined);
   const [lcResult, setLcResult] = useState<UseTelemetryReturn["lcResult"]>({ text: "", seq: 0 });
   const [sliBlock, setSliBlock] = useState<UseTelemetryReturn["sliBlock"]>({ text: "", seq: 0 });
+  const [shaping, setShaping] = useState<ShapingState | null>(null);
+  const history = useRef<LivePoint[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,7 +96,13 @@ export function useTelemetry(): UseTelemetryReturn {
       try {
         const msg = JSON.parse(event.data as string);
         if (msg.type === "telemetry") {
-          setFrame(msg as TelemetryFrame);
+          const f = msg as TelemetryFrame;
+          setFrame(f);
+          const h = history.current;
+          h.push({ t: 0, ts: f.timestamp, load: f.actualLoad, cap: f.safeLoadLimit, pct: f.loadPercent,
+                   boom: f.boomAngle, swing: f.swingAngle, ext: f.extensionMM, hookDrop: f.hookDrop,
+                   tip: f.tipValid ? (f.tipMargin ?? null) : null });
+          while (h.length && f.timestamp - h[0].ts > HISTORY_S) h.shift();
           lastTelemetryTime.current = Date.now();
           setEspConnected(true);
         } else if (msg.type === "debug") {
@@ -107,6 +121,8 @@ export function useTelemetry(): UseTelemetryReturn {
           setEspConnected(true);
         } else if (msg.type === "safety") {
           setSafety({ ...(msg as SafetyStatus), receivedAt: Date.now() });
+        } else if (msg.type === "shaping") {
+          setShaping({ on: !!msg.on, lengthMm: msg.lengthMm, halfPeriodMs: msg.halfPeriodMs });
         } else if (msg.type === "chart") {
           const c = msg.chart as Omit<LoadChartProfile, "description"> | null;
           setCraneChart({ chart: c ? { description: "", ...c } : null, receivedAt: Date.now() });
@@ -125,6 +141,7 @@ export function useTelemetry(): UseTelemetryReturn {
       if (!mountedRef.current) return;
       setWsStatus("disconnected");
       setEspConnected(false);
+      setShaping(null);
       reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
     };
   }, [checkStatus]);
@@ -144,5 +161,5 @@ export function useTelemetry(): UseTelemetryReturn {
   }, [connect, checkStatus]);
 
   return { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus: checkStatus,
-           safety, craneChart, lcResult, sliBlock };
+           safety, craneChart, lcResult, sliBlock, history, shaping };
 }

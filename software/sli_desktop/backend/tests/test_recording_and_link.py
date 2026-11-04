@@ -165,6 +165,9 @@ def test_rope_calibration(api):
     r = client.post("/api/calibrate/rope", json={"scale": 0.0187, "invert": True})
     assert r.status_code == 200
     assert fake.sent == ["CAL5 A4 I1", "CAL6 S0.018700"]
+    r = client.post("/api/calibrate/rope", json={"scale": 0.02, "invert": False, "value": 312.4})
+    assert r.status_code == 200
+    assert fake.sent[-3:] == ["CAL5 A4 I0", "CAL6 S0.020000", "CAL4 A4 V312.400"]
     assert client.post("/api/calibrate/rope", json={"scale": 0}).status_code == 400
     assert client.post("/api/calibrate/encoder", json={"axis": "rope", "value": 0}).status_code == 200
     assert fake.sent[-1] == "CAL4 A4 V0.000"
