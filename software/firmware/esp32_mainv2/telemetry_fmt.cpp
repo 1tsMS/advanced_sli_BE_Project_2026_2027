@@ -102,9 +102,11 @@ void TelemetryFormatter::formatDebugReport(
     DBG_APPEND("$D,AXIS_ROPE,inv:%u scale:%.6f counts:%ld,OK\n",
                diag.ropeInverted ? 1u : 0u, diag.ropeScale, (long)diag.ropeCounts);
 
-    DBG_APPEND("$D,LOAD_CAL,scale:%.1f points:%u,%s\n",
-               diag.loadScale, (unsigned)diag.loadPoints,
+    DBG_APPEND("$D,LOAD_CAL,scale:%.1f points:%u phi:%.2f ang:%u,%s\n",
+               diag.loadScale, (unsigned)diag.loadPoints, diag.loadAnglePhi, diag.loadAngleOn ? 1u : 0u,
                diag.loadScaleCalibrated ? "OK" : "DEFAULT");
+    DBG_APPEND("$D,IMU_ZERO,boom_off:%.2f tilt_off:%.2f src:%u inv:%u,OK\n",
+               diag.imuBoomOffset, diag.imuTiltOffset, (unsigned)diag.imuBoomSrc, diag.imuBoomInv ? 1u : 0u);
 
     // Sensor loop timing since the last DBG (period should stay ~10 ms)
     DBG_APPEND("$D,SENSOR_LOOP,avg:%.2fms max:%.2fms period_max:%.1fms,%s\n",

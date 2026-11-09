@@ -37,9 +37,17 @@
 // Pins confirmed from mpu_hx711_test.ino
 #define HX711_DT_PIN         16
 #define HX711_SCK_PIN        17
-// Default calibration factor (counts per kg) from software/test_codes/loadcell_approx/loadcell_approx.ino
+// Defaults used only when NVS has no saved calibration (new board / flash erased).
+// Values read from the crane with DBG on 2026-11-09 after the CAL9 recalibration
+// (1.075 kg, 5 angles 12-48 deg). The scale is in the CAL9 square-to-rope frame,
+// so it is only right together with the boom-angle correction below.
 // (Plausible load ceiling: SLI_MAX_LOAD_KG in safety_logic.h)
-#define HX711_DEFAULT_SCALE  122000.0f
+#define HX711_DEFAULT_SCALE  459517.6f
+// Load-cell boom-angle correction (load_angle.h): mounting offset phi and on/off.
+// [ ] phi not yet read back from the crane (not in DBG before 2026-11-09): set from
+//     the LOAD_CAL line of the next DBG, then LOAD_ANGLE_ON_DEFAULT -> true.
+#define LOAD_ANGLE_PHI_DEFAULT  0.0f
+#define LOAD_ANGLE_ON_DEFAULT   false
 
 // ======================== FSR ANALOG PINS ========================
 // ADC1 input-only pins — outrigger force sensors
@@ -117,18 +125,22 @@
 // -> hookDropMM  = calibrated + 76            (load-cell end to hook tip: the part that
 //                                              hangs and swings, i.e. the pendulum length)
 #define ROPE_DRUM_DIAMETER_MM   20.0f
-#define ROPE_MM_PER_COUNT_DEFAULT  ((PI * ROPE_DRUM_DIAMETER_MM) / N20_COUNTS_PER_REV)
+// Calibrated 2026-11-09 (ruler fit, CAL6); geometric estimate: (PI * ROPE_DRUM_DIAMETER_MM) / N20_COUNTS_PER_REV
+#define ROPE_MM_PER_COUNT_DEFAULT  0.001551f
+#define ROPE_DEFAULT_INVERT        true
 
 // Telescope AS5600: mm of linear travel per full encoder revolution
 // Calibrated from physical test: 50mm actual = 2.625 revs (-21mm at 8mm/rev) -> 19.048 mm/rev
-#define TELE_MM_PER_REVOLUTION  19.048f
-#define TELE_DEFAULT_INVERT     true
+// Recalibrated 2026-11-09 (CAL8, read back with DBG): 8.11 mm/rev, not inverted
+#define TELE_MM_PER_REVOLUTION  8.11f
+#define TELE_DEFAULT_INVERT     false
 
 // Swing and boom AS5600s: degrees of axis rotation per encoder revolution.
 // Magnet is on the motor shaft, NOT the output shaft, so these are geared.
 // Swing: 20:1 cycloidal drive → 1 encoder rev = 360/20 = 18° of turntable.
 // Boom:  leadscrew — ratio unknown, 360° placeholder until measured via CAL4.
-#define SWING_DEG_PER_REV       18.0f
+// Recalibrated 2026-11-09 (CAL8, read back with DBG): 16.3521 deg/rev (nominal 18 for 20:1)
+#define SWING_DEG_PER_REV       16.3521f
 #define BOOM_DEG_PER_REV        360.0f
 
 // Boom angle source. The boom AS5600 is on the leadscrew motor, and a leadscrew

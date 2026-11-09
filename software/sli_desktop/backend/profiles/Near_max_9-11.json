@@ -1,0 +1,59 @@
+{
+  "name": "Near max 9-11",
+  "description": "Near-max chart from 9 Nov tests (new boom top, coin box 1.07 kg, SLI off). Measured: retracted 1.0 kg 7-50 deg; at ~20 mm 1.0 kg stalls at ~6 deg (lift_20261109_204306). Estimated: 20 mm above 6 deg (0.9 -> 0.85) and full extension 45 mm (0.6 kg, Oct 29 test with the OLD top) - recheck. Retracted 0-6 deg untested (box lifts off at 7-8 deg).",
+  "anglesDeg": [
+    0.0,
+    6.0,
+    10.0,
+    20.0,
+    30.0,
+    40.0,
+    50.0
+  ],
+  "extensionsMM": [
+    0.0,
+    20.0,
+    45.0
+  ],
+  "capacityKg": [
+    [
+      1.0,
+      1.0,
+      0.6
+    ],
+    [
+      1.0,
+      1.0,
+      0.6
+    ],
+    [
+      1.0,
+      0.9,
+      0.6
+    ],
+    [
+      1.0,
+      0.85,
+      0.6
+    ],
+    [
+      1.0,
+      0.85,
+      0.6
+    ],
+    [
+      1.0,
+      0.85,
+      0.6
+    ],
+    [
+      1.0,
+      0.85,
+      0.6
+    ]
+  ],
+  "zones": [],
+  "warnPct": 90.0,
+  "cutPct": 100.0,
+  "updated": "2026-11-09T20:48:37"
+}

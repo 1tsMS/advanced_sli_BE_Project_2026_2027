@@ -262,7 +262,7 @@ void sensorTask_loadCalibration() {
     p.begin("sli_rope", true);
     const float ropeScale = p.getFloat("scale", ROPE_MM_PER_COUNT_DEFAULT);
     _rope.scale = (ropeScale > 0.0f) ? ropeScale : ROPE_MM_PER_COUNT_DEFAULT;
-    _rope.sign  = p.getBool("inv", false) ? -1 : 1;
+    _rope.sign  = p.getBool("inv", ROPE_DEFAULT_INVERT) ? -1 : 1;
     _rope.extRef = p.getFloat("ext_ref", NAN);   // absent until the rope is re-referenced
     p.end();
 
@@ -306,8 +306,8 @@ void sensorTask_loadCalibration() {
         }
     }
     bool hasTare = p.isKey("offset");
-    _loadAngPhi = p.getFloat("ang_phi", 0.0f);
-    _loadAngOn  = p.getBool("ang_on", false);
+    _loadAngPhi = p.getFloat("ang_phi", LOAD_ANGLE_PHI_DEFAULT);
+    _loadAngOn  = p.getBool("ang_on", LOAD_ANGLE_ON_DEFAULT);
     if (_loadAngOn) serialLine("  HX711: boom-angle correction ON, phi %.1f deg", _loadAngPhi);
     p.end();
 
@@ -959,6 +959,12 @@ void sensorTask(void* pvParameters) {
             _diag.loadScale       = _loadCell ? _loadCell->getScale() : 0.0f;
             _diag.loadPoints      = _loadCalN;
             _diag.loadScaleCalibrated = _loadScaleCalibrated;
+            _diag.loadAnglePhi  = _loadAngPhi;
+            _diag.loadAngleOn   = _loadAngOn;
+            _diag.imuBoomOffset = _boomAngleOffset;
+            _diag.imuTiltOffset = _tiltAngleOffset;
+            _diag.imuBoomSrc    = _boomSource;
+            _diag.imuBoomInv    = _boomInvert;
             _loopSumMs += workMs;
             if (++_loopCount >= 100) {
                 _diag.loopAvgMs = _loopSumMs / _loopCount;

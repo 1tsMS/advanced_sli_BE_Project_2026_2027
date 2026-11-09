@@ -57,6 +57,11 @@ struct SensorDiag {
     float   loadScale;              // HX711 counts per kg
     uint8_t loadPoints;             // calibration weights recorded this session
     bool    loadScaleCalibrated;    // false = still the config.h default
+    float   loadAnglePhi;           // CAL9 mounting offset (deg)
+    bool    loadAngleOn;            // CAL9 correction active
+    float   imuBoomOffset, imuTiltOffset;   // CAL1 zero (deg)
+    uint8_t imuBoomSrc;             // 0 roll, 1 pitch
+    bool    imuBoomInv;
     // Worst time per loop stage since the last DBG (ms): finds what stalls the loop
     float   stageMaxMs[6];          // see STAGE_* in sensor_task.cpp
     uint32_t imuReconnects;         // IMU fast re-inits after dropouts
