@@ -1,170 +1,101 @@
-import { useEffect, useRef } from "react";
-
+/**
+ * 270° dial in SVG, drawn with the theme tokens. ISA-101 style: the value arc
+ * is neutral while normal and turns WARN / CRIT only past its thresholds; the
+ * WARN / CRIT ranges are marked on the track so the value is read in context.
+ * Bidirectional dials (min < 0, e.g. tilt) grow from the centre and use |value|.
+ */
 interface GaugeProps {
   value: number;
   min?: number;
   max: number;
   label: string;
   unit?: string;
-  color?: string;
+  warnAt?: number;          // |value| at or above = WARN
+  critAt?: number;          // |value| at or above = CRIT
   size?: number;
-  isError?: boolean;
-  /** Text shown instead of "ERR" / "UNCAL" while isError (e.g. "OUT" / "CHART"). */
-  errorText?: [string, string];
+  /** Shown instead of the number (e.g. ["OUT", "CHART"]) when the value has no meaning. */
+  text?: [string, string] | null;
 }
 
-/**
- * Circular arc gauge using Canvas 2D.
- * Renders a 240° arc from min to max, colored by value level.
- */
-export function Gauge({
-  value,
-  min = 0,
-  max,
-  label,
-  unit = "",
-  color = "#22C4DE",
-  size = 90,
-  isError = false,
-  errorText = ["ERR", "UNCAL"],
-}: GaugeProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+const SWEEP = 270;
+const START = 135;          // degrees, clockwise from +x: bottom-left
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+function polar(cx: number, cy: number, r: number, deg: number) {
+  const a = (deg * Math.PI) / 180;
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+}
 
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width  = size * dpr;
-    canvas.height = size * dpr;
-    canvas.style.width  = `${size}px`;
-    canvas.style.height = `${size}px`;
-    ctx.scale(dpr, dpr);
+function arc(cx: number, cy: number, r: number, from: number, to: number) {
+  if (to - from < 0.01) return "";
+  const [x1, y1] = polar(cx, cy, r, from);
+  const [x2, y2] = polar(cx, cy, r, to);
+  return `M ${x1} ${y1} A ${r} ${r} 0 ${to - from > 180 ? 1 : 0} 1 ${x2} ${y2}`;
+}
 
-    const cx = size / 2, cy = size / 2;
-    const radius = size * 0.38;
-    const startAngle = (135 * Math.PI) / 180;   // 225° on clock → bottom-left
-    const totalAngle = (270 * Math.PI) / 180;    // Full sweep = 270°
+export function Gauge({ value, min = 0, max, label, unit = "", warnAt, critAt, size = 110, text = null }: GaugeProps) {
+  const cx = size / 2, cy = size / 2, r = size * 0.38, w = size * 0.09;
+  const bi = min < 0;
+  const span = bi ? Math.max(-min, max) : max - min;
+  const frac = (v: number) => Math.max(0, Math.min(1, v / (span || 1)));
+  const ang = (f: number) => START + SWEEP * f;
 
-    const isBidirectional = min < 0;
-    const hasError = isError;
+  const mag = bi ? Math.abs(value) : value - min;
+  const judged = bi ? Math.abs(value) : value;
+  const level = !Number.isFinite(value) || text ? "" : critAt !== undefined && judged >= critAt ? "crit"
+    : warnAt !== undefined && judged >= warnAt ? "warn" : "";
+  const stroke = level === "crit" ? "var(--crit)" : level === "warn" ? "var(--warn)" : "var(--text-2)";
 
-    let arcStart = startAngle;
-    let arcEnd = startAngle;
-    let fillColor = color;
-
-    if (isBidirectional) {
-      const midAngle = startAngle + totalAngle * 0.5;
-      const absVal = Math.abs(value);
-      const absMax = Math.max(Math.abs(min), Math.abs(max));
-      const ratio = Math.min(1, absVal / (absMax || 1));
-
-      if (value < 0) {
-        arcStart = midAngle - (totalAngle * 0.5) * ratio;
-        arcEnd = midAngle;
-      } else {
-        arcStart = midAngle;
-        arcEnd = midAngle + (totalAngle * 0.5) * ratio;
-      }
-
-      fillColor = hasError
-        ? "#FFB347"
-        : ratio > 0.75
-        ? "#FF3B3B"
-        : ratio > 0.45
-        ? "#FFB347"
-        : color;
+  // value arc
+  let from = START, to = START;
+  if (Number.isFinite(value) && !text) {
+    if (bi) {
+      const mid = START + SWEEP / 2, d = (SWEEP / 2) * frac(Math.abs(value));
+      [from, to] = value < 0 ? [mid - d, mid] : [mid, mid + d];
     } else {
-      const pct = hasError ? 1.0 : Math.max(0, Math.min((value - min) / (max - min), 1));
-      arcStart = startAngle;
-      arcEnd = startAngle + totalAngle * pct;
-
-      fillColor = hasError
-        ? "#FFB347"
-        : pct < 0.6
-        ? color
-        : pct < 0.85
-        ? "#FFB347"
-        : "#FF3B3B";
+      to = ang(frac(mag));
     }
+  }
 
-    ctx.clearRect(0, 0, size, size);
-
-    // Track background
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, startAngle, startAngle + totalAngle);
-    ctx.strokeStyle = "rgba(255,255,255,0.07)";
-    ctx.lineWidth = size * 0.1;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    // Center zero indicator notch for bidirectional gauges
-    if (isBidirectional) {
-      const midAngle = startAngle + totalAngle * 0.5;
-      const tx1 = cx + (radius - size * 0.06) * Math.cos(midAngle);
-      const ty1 = cy + (radius - size * 0.06) * Math.sin(midAngle);
-      const tx2 = cx + (radius + size * 0.06) * Math.cos(midAngle);
-      const ty2 = cy + (radius + size * 0.06) * Math.sin(midAngle);
-      ctx.beginPath();
-      ctx.moveTo(tx1, ty1);
-      ctx.lineTo(tx2, ty2);
-      ctx.strokeStyle = "rgba(255,255,255,0.25)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+  // threshold bands on the track
+  const bands: { from: number; to: number; cls: string }[] = [];
+  const band = (lo: number, hi: number, cls: string) => {
+    if (bi) {
+      const mid = START + SWEEP / 2;
+      const a = (SWEEP / 2) * frac(lo), b = (SWEEP / 2) * frac(hi);
+      bands.push({ from: mid + a, to: mid + b, cls }, { from: mid - b, to: mid - a, cls });
+    } else {
+      bands.push({ from: ang(frac(lo - min)), to: ang(frac(hi - min)), cls });
     }
+  };
+  if (warnAt !== undefined) band(warnAt, critAt ?? span, "warn");
+  if (critAt !== undefined) band(critAt, bi ? span : max, "crit");
 
-    // Value arc
-    if (Math.abs(arcEnd - arcStart) > 0.01) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, arcStart, arcEnd);
-      ctx.strokeStyle = fillColor;
-      ctx.lineWidth = size * 0.1;
-      ctx.lineCap = "round";
-      ctx.stroke();
-
-      // Glow effect
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, arcStart, arcEnd);
-      ctx.strokeStyle = hasError ? "rgba(255, 179, 71, 0.25)" : fillColor.replace(")", ", 0.3)").replace("rgb(", "rgba(");
-      ctx.lineWidth = size * 0.18;
-      ctx.lineCap = "round";
-      ctx.globalAlpha = 0.25;
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    // Center value text
-    ctx.fillStyle = hasError ? "#FFB347" : "#E8EAF0";
-    ctx.font = `bold ${size * 0.18}px JetBrains Mono, monospace`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    const displayVal = hasError
-      ? errorText[0]
-      : Number.isFinite(value)
-      ? Math.abs(value) >= 100
-        ? value.toFixed(0)
-        : value.toFixed(1)
-      : "--";
-    ctx.fillText(displayVal, cx, cy - size * 0.03);
-
-    // Unit
-    ctx.fillStyle = hasError ? "rgba(255, 179, 71, 0.7)" : "rgba(255,255,255,0.3)";
-    ctx.font = `${size * 0.1}px Inter, sans-serif`;
-    ctx.fillText(hasError ? errorText[1] : unit, cx, cy + size * 0.14);
-
-    // Label below
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
-    ctx.font = `600 ${size * 0.1}px Inter, sans-serif`;
-    ctx.fillText(label.toUpperCase(), cx, cy + size * 0.38);
-
-  }, [value, min, max, label, unit, color, size, isError, errorText[0], errorText[1]]);
+  const shown = text ? text[0] : Number.isFinite(value) ? (Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(1)) : "–";
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ display: "block" }}
-    />
+    <svg className="gauge" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="meter"
+         aria-label={`${label} ${shown} ${unit}`} aria-valuenow={value} aria-valuemin={min} aria-valuemax={max}>
+      <path d={arc(cx, cy, r, START, START + SWEEP)} stroke="var(--surface-3)" strokeWidth={w} fill="none" strokeLinecap="round" />
+      {bands.map((b, i) => (
+        <path key={i} d={arc(cx, cy, r + w * 0.85, b.from, b.to)} fill="none" strokeWidth={w * 0.35}
+              stroke={b.cls === "crit" ? "var(--crit)" : "var(--warn)"} opacity={0.7} />
+      ))}
+      {bi && (() => {
+        const [x1, y1] = polar(cx, cy, r - w, START + SWEEP / 2);
+        const [x2, y2] = polar(cx, cy, r + w, START + SWEEP / 2);
+        return <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="var(--line-strong)" strokeWidth={1.5} />;
+      })()}
+      <path d={arc(cx, cy, r, from, to)} stroke={stroke} strokeWidth={w} fill="none" strokeLinecap="round" />
+      <text x={cx} y={cy - size * 0.02} textAnchor="middle" dominantBaseline="middle"
+            fill={level ? stroke : "var(--text)"} fontFamily="var(--font-mono)" fontWeight={800} fontSize={size * 0.19}>
+        {level === "crit" ? "▲" : ""}{shown}
+      </text>
+      <text x={cx} y={cy + size * 0.15} textAnchor="middle" fill="var(--text-3)" fontFamily="var(--font-sans)" fontSize={size * 0.1}>
+        {text ? text[1] : unit}
+      </text>
+      <text x={cx} y={cy + size * 0.4} textAnchor="middle" fill="var(--text-2)" fontFamily="var(--font-sans)" fontWeight={700} fontSize={size * 0.1}>
+        {label.toUpperCase()}
+      </text>
+    </svg>
   );
 }

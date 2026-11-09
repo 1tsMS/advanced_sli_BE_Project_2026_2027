@@ -26,6 +26,7 @@ _VALID_PATTERNS = [
     re.compile(r"^CAL6\s+S\d+(\.\d+)?$"),                          # Rope scale (mm per N20 count)
     re.compile(r"^CAL7\s+(W\d+(\.\d+)?|CLEAR|S-?\d+(\.\d+)?)$"),     # Load cell: record weight / clear / set scale
     re.compile(r"^CAL8\s+A[1-3]\s+S\d+(\.\d+)?(\s+I[01])?$"),       # Axis ratio: units per encoder rev
+    re.compile(r"^CAL9\s+(W\d+(\.\d+)?|P-?\d+(\.\d+)?|OFF|CLEAR)$"),  # Load boom-angle correction: capture / phi / off / clear
     re.compile(r"^DBG$"),                                            # Debug request
     re.compile(r"^CFG\s+RATE\s+\d+$"),                              # Config rate
     # Load chart upload (firmware load_chart.h): BEGIN, axes, rows, zones, thresholds, COMMIT/GET
@@ -36,6 +37,8 @@ _VALID_PATTERNS = [
     re.compile(r"^LC\s+P(\s+\d+(\.\d+)?){2}$"),
     re.compile(r"^LC\s+(COMMIT|GET)$"),
     re.compile(r"^SLI\s+(ON|OFF|BYPASS\s+\d{1,3})$"),                # Arm / off / timed bypass (<= 600 s on the ESP32)
+    re.compile(r"^SLI\s+CUT\s+[PRS]$"),                              # Cut mode: predictive / reactive / speed-aware
+    re.compile(r"^DRV\s+IDLE\s+[01]$"),                              # Mega: release idle stepper drivers on / off
     re.compile(r"^RST$"),                                            # Clear latched E-stop
     re.compile(r"^SHP\s+[01](\s+L\d{1,4})?$"),                       # Swing input shaping off / on [pendulum mm]
 ]

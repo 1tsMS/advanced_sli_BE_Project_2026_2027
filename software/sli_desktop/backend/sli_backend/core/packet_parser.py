@@ -1,10 +1,10 @@
 """
 PacketParser — parses raw ASCII lines from ESP32 into typed objects.
 
-Handles two packet types:
-  $T  → Telemetry frame (sensor data)
-  $D  → Debug report lines (I2C scan results)
-  $ACK → Command acknowledgements (forwarded to WebSocket)
+Line types from the ESP32:
+  $T   telemetry frame          $S   SLI status          $D   debug report lines
+  $ACK command acknowledgement  $SHP shaping state       $LC  load chart readback
+  $EV  timestamped event (firmware clock): FI fault switch, SLI state change, CUT
 """
 from __future__ import annotations
 import time
@@ -16,9 +16,12 @@ from .load_chart import ChartReadback
 
 logger = logging.getLogger(__name__)
 
-# $T CSV field count (must match firmware telemetry_fmt.cpp)
-TELEMETRY_FIELD_COUNT = 15
-TELEMETRY_FIELD_COUNT_ROPE = 17   # + ropeTotalMM, hookDropMM (firmware from 2026-10-29)
+# $T field counts (firmware telemetry_fmt.h): fields are only ever appended
+TELEMETRY_FIELD_COUNTS = (
+    15,   # base
+    17,   # + ropeTotalMM, hookDropMM (2026-10-29)
+    20,   # + accelDyn, jerk, imuRejected (2026-11-07)
+)
 
 
 class PacketParser:
@@ -32,6 +35,7 @@ class PacketParser:
         self._on_safety = None
         self._on_chart = None
         self._on_shaping = None
+        self._on_event = None
         self._chart = ChartReadback()
 
     def set_callbacks(
@@ -42,6 +46,7 @@ class PacketParser:
         on_safety=None,
         on_chart=None,
         on_shaping=None,
+        on_event=None,
     ) -> None:
         """Register callbacks invoked when packets are fully parsed."""
         self._on_telemetry = on_telemetry
@@ -50,6 +55,18 @@ class PacketParser:
         self._on_safety = on_safety
         self._on_chart = on_chart
         self._on_shaping = on_shaping
+        self._on_event = on_event
+
+    @staticmethod
+    def parse_event(line: str) -> Optional[dict]:
+        """$EV,<ms>,<kind>,<detail...>  ->  {"fwMs", "kind", "detail"}"""
+        parts = line.strip().split(",")
+        if len(parts) < 3:
+            return None
+        try:
+            return {"fwMs": int(parts[1]), "kind": parts[2], "detail": ",".join(parts[3:])}
+        except ValueError:
+            return None
 
     @staticmethod
     def parse_shaping(line: str) -> Optional[dict]:
@@ -64,20 +81,22 @@ class PacketParser:
 
     @staticmethod
     def parse_safety(line: str) -> Optional[SafetyStatus]:
-        """$S,state,pct,capKg,zone,bypassLeftS,blockedHex,chartName[,mode[,why]] (chart names
-        never contain commas; firmware before SLI OFF sends no mode: then it is ARMED or BYPASS;
-        why = reason for a FAULT / out-of-chart cut, from 2026-11-04 firmware)."""
+        """$S,state,pct,capKg,zone,bypassLeftS,blockedHex,chartName[,mode[,why[,cutMode,drvIdle]]]
+        (chart names never contain commas). Older firmware sends fewer fields: no mode = ARMED or
+        BYPASS; why from 2026-11-04; cut mode + driver idle from 2026-11-07."""
         parts = line.strip().split(",")
-        if len(parts) not in (8, 9, 10):
+        if len(parts) not in (8, 9, 10, 12):
             return None
         try:
             left = int(parts[5])
             mode = parts[8] if len(parts) >= 9 else ("BYPASS" if left > 0 else "ARMED")
-            why = parts[9] if len(parts) == 10 else "-"
+            why = parts[9] if len(parts) >= 10 else "-"
+            cut_mode = parts[10] if len(parts) == 12 else "P"
+            drv_idle = (parts[11] == "1") if len(parts) == 12 else None
             return SafetyStatus(state=parts[1], pct=float(parts[2]), capKg=float(parts[3]),
                                 zone=int(parts[4]), bypassLeftS=left,
                                 blocked=int(parts[6], 16), chart=parts[7], mode=mode, why=why,
-                                timestamp=time.time())
+                                cutMode=cut_mode, drvIdle=drv_idle, timestamp=time.time())
         except ValueError:
             return None
 
@@ -106,6 +125,11 @@ class PacketParser:
             if status and self._on_safety:
                 self._on_safety(status)
 
+        elif line.startswith("$EV,"):
+            ev = self.parse_event(line)
+            if ev and self._on_event:
+                self._on_event(ev)
+
         elif line.startswith("$SHP,"):
             shp = self.parse_shaping(line)
             if shp and self._on_shaping:
@@ -129,18 +153,14 @@ class PacketParser:
         Parse $T CSV line into TelemetryFrame.
         Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
                    ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-                   safeLimit,loadPct,alarmLvl[,ropeTotalMM,hookDropMM]
-        The last two were appended later; older firmware sends 15 fields and
-        they are then left at 0.
+                   safeLimit,loadPct,alarmLvl[,ropeTotalMM,hookDropMM[,accelDyn,jerk,imuRejected]]
+        Fields missing from older firmware are left at 0.
         """
         try:
             parts = line.split(",")
             n = len(parts) - 1                             # minus the "$T" prefix
-            if n not in (TELEMETRY_FIELD_COUNT, TELEMETRY_FIELD_COUNT_ROPE):
-                logger.warning(
-                    f"Telemetry field count mismatch: got {n}, "
-                    f"expected {TELEMETRY_FIELD_COUNT} or {TELEMETRY_FIELD_COUNT_ROPE}"
-                )
+            if n not in TELEMETRY_FIELD_COUNTS:
+                logger.warning(f"Telemetry field count mismatch: got {n}, expected one of {TELEMETRY_FIELD_COUNTS}")
                 return None
 
             frame = TelemetryFrame(
@@ -159,6 +179,9 @@ class PacketParser:
                 alarmLevel    = int(parts[15]),
                 ropeTotal     = float(parts[16]) if n >= 17 else 0.0,
                 hookDrop      = float(parts[17]) if n >= 17 else 0.0,
+                accelDyn      = float(parts[18]) if n >= 20 else 0.0,
+                jerk          = float(parts[19]) if n >= 20 else 0.0,
+                imuRejected   = int(parts[20]) if n >= 20 else 0,
                 timestamp     = time.time(),
             )
             return frame

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ShieldCheck, ShieldOff, RotateCcw } from "lucide-react";
+import { ShieldCheck, ShieldOff, RotateCcw, ChevronDown } from "lucide-react";
 import {
   allowedMotions, fmtLeft, liveSafety, reasonText, useNow, MOTION_NAME, type ReceivedSafety,
 } from "./sliStatus";
+import { API_BASE } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 
 const BYPASS_OPTIONS = [
   { s: 60,  label: "1 min" },
@@ -89,64 +89,64 @@ export function SliControl({ safety }: SliControlProps) {
 
       {state === "ESTOP" && (
         <button className="sli-btn reset" onClick={() => run("/sli/reset")} title="Clear the latched E-stop (RST)">
-          <RotateCcw size={12} /> RESET
+          <RotateCcw size={15} /> Reset E-stop
         </button>
       )}
 
       {/* Always clickable, in every state (FAULT, E-stop, no status): the mode menu
           is how you get the crane moving again when a sensor is down. */}
       <button className={`sli-btn ${mode === "ARMED" ? "armed" : "disarmed"}`} aria-expanded={confirming}
-              onClick={() => setConfirming(c => !c)}
-              title={!s ? "No SLI status from the ESP32: the menu still sends the command"
-                        : mode === "ARMED" ? "SLI armed: click to bypass or turn it off"
-                        : "SLI not enforcing: click to turn it on, or change the mode"}>
+              aria-haspopup="dialog" onClick={() => setConfirming(c => !c)}
+              title={!s ? "No SLI status from the ESP32: the menu still sends the command" : "Change the SLI mode"}>
         {mode === "ARMED"
-          ? <><ShieldCheck size={12} /> ARMED</>
+          ? <><ShieldCheck size={15} /> Armed</>
           : mode === "OFF"
-            ? <><ShieldOff size={12} /> SLI OFF</>
-            : <><ShieldOff size={12} /> BYPASS <span className="sli-left">{fmtLeft(bypassLeft)}</span></>}
+            ? <><ShieldOff size={15} /> SLI off</>
+            : <><ShieldOff size={15} /> Bypass <span className="sli-left">{fmtLeft(bypassLeft)}</span></>}
+        <ChevronDown size={14} className="chev" />
       </button>
 
       {confirming && (
         <div className="sli-pop" role="dialog" aria-label="SLI mode">
-          {mode !== "ARMED" && (
-            <>
-              <div className="sli-pop-title">SLI is {mode === "OFF" ? "off" : "bypassed"}</div>
-              <div className="sli-pop-row">
-                <button className="sli-pop-opt" onClick={() => run("/sli/arm", undefined, "ARMED")}>Turn SLI on (arm)</button>
-              </div>
-            </>
-          )}
-          {mode === "ARMED" && (
-            <>
-              <div className="sli-pop-title">Stop the SLI cutting motion?</div>
-              <div className="sli-pop-body">
-                Overload, chart limits and sensor faults will no longer stop the motors. E-stop
-                and the 400 ms dead-man stay active either way.
-              </div>
-            </>
-          )}
-          <div className="sli-pop-k">Bypass for a while (re-arms by itself)</div>
-          <div className="sli-pop-row">
-            {BYPASS_OPTIONS.map(o => (
-              <button key={o.s} className="sli-pop-opt" onClick={() => run("/sli/bypass", { seconds: o.s }, "BYPASS")}>
-                {o.label}
-              </button>
-            ))}
+          <div className="sli-pop-head">SLI mode</div>
+
+          <button className={`sli-opt ${mode === "ARMED" ? "current" : ""}`}
+                  onClick={() => mode === "ARMED" ? setConfirming(false) : run("/sli/arm", undefined, "ARMED")}>
+            <span className="sli-opt-dot" />
+            <span className="sli-opt-name">Armed</span>
+            <span className="sli-opt-tag">{mode === "ARMED" ? "current" : "default"}</span>
+            <span className="sli-opt-desc">Stops any motion that would overload the crane or leave the load chart.</span>
+          </button>
+
+          <div className={`sli-opt ${mode === "BYPASS" ? "current" : ""}`}>
+            <span className="sli-opt-dot" />
+            <span className="sli-opt-name">Bypass</span>
+            <span className="sli-opt-tag">{mode === "BYPASS" ? `${fmtLeft(bypassLeft)} left` : "timed"}</span>
+            <span className="sli-opt-desc">No motion cut for a while, then it re-arms by itself.</span>
+            <span className="sli-times">
+              {BYPASS_OPTIONS.map(o => (
+                <button key={o.s} className="sli-time" onClick={() => run("/sli/bypass", { seconds: o.s }, "BYPASS")}>
+                  {o.label}
+                </button>
+              ))}
+            </span>
           </div>
-          <div className="sli-pop-k">Or turn it off (until you turn it on, or the ESP32 reboots)</div>
-          <div className="sli-pop-row">
-            {mode !== "OFF" && (
-              <button className="sli-pop-opt off" onClick={() => run("/sli/off", undefined, "OFF")}>Turn SLI off</button>
-            )}
-            <button className="btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
-          </div>
+
+          <button className={`sli-opt ${mode === "OFF" ? "current" : ""}`}
+                  onClick={() => mode === "OFF" ? setConfirming(false) : run("/sli/off", undefined, "OFF")}>
+            <span className="sli-opt-dot" />
+            <span className="sli-opt-name">Off</span>
+            <span className="sli-opt-tag">{mode === "OFF" ? "current" : "until re-armed"}</span>
+            <span className="sli-opt-desc">No motion cut until you arm it again or the ESP32 reboots.</span>
+          </button>
+
+          <div className="sli-pop-foot">E-stop and the 400 ms dead-man work in every mode.</div>
         </div>
       )}
 
-      {err && <span className="rec-err" title={err}>{err}</span>}
+      {err && <span className="inline-err" title={err}>{err}</span>}
       {noEffect && !err && (
-        <span className="rec-err" title="The command was sent but the ESP32 still reports the old mode. Firmware without SLI OFF / mode reporting ignores it.">
+        <span className="inline-err" title="The command was sent but the ESP32 still reports the old mode. Firmware without SLI OFF / mode reporting ignores it.">
           ESP32 still {s!.mode}: flash latest esp32_mainv2
         </span>
       )}

@@ -45,7 +45,27 @@ struct StepperState {
     uint32_t speed;        // Delay between steps in microseconds (uint16 overflowed below ~16 steps/s)
     unsigned long lastStepTime;
     unsigned long lastCmdMs;   // millis() of the last M-command (dead-man watchdog)
+    bool    enabled;       // EN pin state we last wrote (true = driver on, holding current)
+    unsigned long lastActiveMs;  // last millis() the axis was moving
 };
+
+// ---- Driver release when idle ----
+// An enabled A4988 keeps chopping its holding current through the motor at
+// ~20-40 kHz even when nothing moves. With all three on, that switching current
+// is the prime suspect for the MPU6050 noise that appears only when the 12 V
+// supply is on. Lift and telescope are leadscrews (self-locking), so they hold
+// position without current. The A4988 keeps its microstep position while
+// disabled, so no counts are lost by switching it off.
+// Swing (20:1 cycloidal) may creep under an off-centre load when released: its
+// AS5600 still measures any creep, so the SLI keeps seeing the real angle.
+//   R1  release idle drivers (default)      R0  keep all drivers on (old behaviour)
+// The ESP32 sends the mode at boot and every 2 s (DRV IDLE 0|1 from the dashboard),
+// so the A/B noise test (E1) needs no reflash.
+#define IDLE_RELEASE_DEFAULT  true
+#define IDLE_RELEASE_MS   500UL   // idle this long -> driver off
+#define ENABLE_SETTLE_US  2000UL  // coil current rise after EN before the first step
+
+bool idleRelease = IDLE_RELEASE_DEFAULT;
 
 // Dead-man: an axis keeps stepping only while its M-command keeps arriving
 // (the dashboard repeats it every 100 ms while held). Same value as the ESP32.
@@ -60,10 +80,10 @@ struct StepperState {
 #define RAMP_TICK_US  1000UL   // ramp update period
 
 StepperState motors[3] = {
-    // pins                          accel (steps/s^2)
-    {SWING_STEP, SWING_DIR, SWING_EN,     0.0f, false, 0, 0, 0, 1000, 0, 0},  // M1 = Swing (no ramp: ZV input shaping below)
-    {LIFT_STEP,  LIFT_DIR,  LIFT_EN,   1500.0f, false, 0, 0, 0, 1000, 0, 0},  // M2 = Lift   <- TUNE HERE
-    {TELE_STEP,  TELE_DIR,  TELE_EN,      0.0f, false, 0, 0, 0, 1000, 0, 0}   // M3 = Telescope (no ramp)
+    // pins                          accel (steps/s^2), then runtime state
+    {SWING_STEP, SWING_DIR, SWING_EN,     0.0f, false, 0, 0, 0, 1000, 0, 0, false, 0},  // M1 = Swing (no ramp: ZV input shaping below)
+    {LIFT_STEP,  LIFT_DIR,  LIFT_EN,   1500.0f, false, 0, 0, 0, 1000, 0, 0, false, 0},  // M2 = Lift   <- TUNE HERE
+    {TELE_STEP,  TELE_DIR,  TELE_EN,      0.0f, false, 0, 0, 0, 1000, 0, 0, false, 0}   // M3 = Telescope (no ramp)
 };
 unsigned long lastRampUs = 0;
 
@@ -97,14 +117,17 @@ LineBuffer usbLine = { {0}, 0 };
 // ======================== SETUP ========================
 void setup() {
     Serial.begin(115200);   // USB (for debug, optional)
-    Serial1.begin(9600);    // UART from ESP32 (Pin 18=TX1, Pin 19=RX1)
+    Serial1.begin(57600);   // UART from ESP32 (Pin 18=TX1, Pin 19=RX1); = MEGA_BAUD in the ESP32 config.h
 
     // Configure stepper pins
     for (int i = 0; i < 3; i++) {
         pinMode(motors[i].stepPin, OUTPUT);
         pinMode(motors[i].dirPin,  OUTPUT);
         pinMode(motors[i].enPin,   OUTPUT);
-        digitalWrite(motors[i].enPin, LOW);  // Enable drivers (active LOW)
+        // EN is active LOW. With idle release the drivers start off (nothing is
+        // moving at boot); without it they are on and hold, as before.
+        motors[i].enabled = !idleRelease;
+        digitalWrite(motors[i].enPin, motors[i].enabled ? LOW : HIGH);
     }
 
     Serial.println("Mega Executor Ready");
@@ -148,6 +171,18 @@ void loop() {
     // 2b. Shaped swing: apply the delayed half of the reference when it is due
     if (shapeOn) shaperUpdate(nowMs);
 
+    // 2c. Switch off drivers that have been idle for IDLE_RELEASE_MS
+    for (int i = 0; i < 3; i++) {
+        StepperState& m = motors[i];
+        const bool busy = m.running || (i == 0 && shapeOn && shaper.ref() != 0.0f);
+        if (busy) {
+            m.lastActiveMs = nowMs;
+        } else if (idleRelease && m.enabled && (nowMs - m.lastActiveMs) > IDLE_RELEASE_MS) {
+            m.enabled = false;
+            digitalWrite(m.enPin, HIGH);   // driver off: no holding current, no chopping
+        }
+    }
+
     // 3. Ramp speeds toward their targets
     unsigned long now = micros();
     if (now - lastRampUs >= RAMP_TICK_US) {
@@ -183,6 +218,15 @@ void updateRamp(StepperState& m, float dt) {
     m.speed = (uint32_t)(1000000.0f / m.curSps);
 }
 
+/** Driver on before the first step; waits for the coil current to build up. */
+void driverOn(StepperState& m) {
+    m.lastActiveMs = millis();
+    if (m.enabled) return;
+    digitalWrite(m.enPin, LOW);
+    m.enabled = true;
+    delayMicroseconds(ENABLE_SETTLE_US);
+}
+
 void hardStop(StepperState& m) {
     m.running   = false;
     m.curSps    = 0.0f;
@@ -209,6 +253,7 @@ void shaperUpdate(unsigned long nowMs) {
     const uint8_t dir = out > 0.0f ? 1 : 0;
     const float   sps = fabs(out);
     if (!m.running || m.direction != dir) {
+        driverOn(m);
         m.direction = dir;
         digitalWrite(m.dirPin, dir ? HIGH : LOW);
         m.running = true;
@@ -225,6 +270,22 @@ void processCommand(const char* cmd) {
         emergencyStop();
         Serial.println("E-STOP TRIGGERED");
         Serial1.println("$ACK,ESTOP");
+        return;
+    }
+
+    // --- R1 / R0: release idle drivers / keep them on ---
+    if (cmd[0] == 'R' && (cmd[1] == '0' || cmd[1] == '1')) {
+        const bool on = (cmd[1] == '1');
+        if (on != idleRelease) {
+            idleRelease = on;
+            Serial.print("Idle release "); Serial.println(on ? "ON" : "OFF");
+            if (!on) {   // back to always-on: enable (hold) every axis now
+                for (int i = 0; i < 3; i++) {
+                    digitalWrite(motors[i].enPin, LOW);
+                    motors[i].enabled = true;
+                }
+            }
+        }
         return;
     }
 
@@ -292,6 +353,7 @@ void processCommand(const char* cmd) {
         m.lastCmdMs = millis();   // feed the dead-man watchdog
 
         if (!wasRunning) {
+            driverOn(m);
             // DIR first, then begin at a speed the motor can pull in
             m.direction = newDir;
             digitalWrite(m.dirPin, m.direction ? HIGH : LOW);
@@ -312,9 +374,7 @@ void processCommand(const char* cmd) {
 // ======================== EMERGENCY STOP ========================
 void emergencyStop() {
     for (int i = 0; i < 3; i++) {
-        hardStop(motors[i]);   // no ramp: stop now
-        // Optionally disable drivers for immediate coast-down:
-        // digitalWrite(motors[i].enPin, HIGH);  // HIGH = disabled
+        hardStop(motors[i]);   // no ramp: stop now; with idle release the driver goes off 500 ms later
     }
 }
 

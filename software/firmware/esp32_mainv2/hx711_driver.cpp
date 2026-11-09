@@ -59,6 +59,10 @@ float HX711Driver::getWeight() {
     // Same maths as the library's get_units(), without a second read
     float w = (float)(raw - _scale.get_offset()) / _scale.get_scale();
 
+    // Bridge health. The NEGATIVE check needs a tare: before one, raw - 0 can be
+    // any value, so it only runs once an offset exists.
+    _monitor.push(raw, _scale.get_offset() != 0 ? w : 0.0f, (int32_t)_scale.get_offset());
+
     // Deadband: eliminate sensor noise near zero (matches loadcell_approx.ino)
     if (w > -0.02f && w < 0.02f) w = 0.0f;
     if (w < 0.0f) w = 0.0f;

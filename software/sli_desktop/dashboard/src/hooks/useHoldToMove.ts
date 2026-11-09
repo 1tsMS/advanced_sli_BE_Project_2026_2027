@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
+import { API_BASE } from "../api";
 
-const API_BASE = "http://localhost:8000/api";
 
 /** Resend interval while an axis is held. Firmware stops an axis after 400 ms of silence. */
 const REPEAT_MS = 100;

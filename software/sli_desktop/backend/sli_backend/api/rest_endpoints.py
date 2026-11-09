@@ -13,11 +13,11 @@ from fastapi.responses import FileResponse
 from ..api.models import (
     CommandRequest, ConnectionRequest, LoadChartProfile, SafetyStatus, BypassRequest,
     StatusResponse, ApiResponse, ImuCalibrateRequest, TeleCalibrateRequest,
-    RecordingState, EncoderCalibrateRequest, RopeCalibrateRequest,
+    EncoderCalibrateRequest, RopeCalibrateRequest,
     LoadCalibrateRequest, AxisScaleRequest,
 )
 from ..api.ws_endpoint import ws_manager
-from ..config.settings import PROFILE_DIR
+from ..config.settings import PROFILE_DIR, LOG_DIR
 from ..core import load_chart
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api")
 # These are set by main.py after all subsystems are initialized
 _serial = None
 _command_router = None
-_session_logger = None
+_log_dir: Path = LOG_DIR
 _profiles = load_chart.ProfileStore(PROFILE_DIR)
 _safety = SafetyStatus()          # latest $S from the ESP32
 
@@ -37,12 +37,12 @@ def set_safety_status(status: SafetyStatus) -> None:
     _safety = status
 
 
-def init_endpoints(serial, command_router, session_logger) -> None:
+def init_endpoints(serial, command_router, log_dir: Path = LOG_DIR) -> None:
     """Inject subsystem dependencies (called from main.py)."""
-    global _serial, _command_router, _session_logger
+    global _serial, _command_router, _log_dir
     _serial = serial
     _command_router = command_router
-    _session_logger = session_logger
+    _log_dir = log_dir
 
 
 # ------------------------------------------------------------------ #
@@ -58,12 +58,7 @@ async def get_status():
         baudRate=_serial.baud_rate if _serial else None,
         rxRate=round(_serial.rx_rate, 1) if _serial else 0.0,
         backendOK=True,
-        recording=_recording_state(),
     )
-
-
-def _recording_state() -> RecordingState:
-    return RecordingState(**_session_logger.state()) if _session_logger else RecordingState()
 
 
 @router.get("/ports")
@@ -82,7 +77,6 @@ async def connect(req: ConnectionRequest):
 
     success = await _serial.connect(req.port, req.baudRate)
     if success:
-        # Recording is NOT started here: it is off until the REC button is pressed
         return ApiResponse(ok=True, message=f"Connected to {req.port}")
     else:
         raise HTTPException(400, f"Failed to connect to {req.port}")
@@ -94,39 +88,8 @@ async def disconnect():
     if not _serial:
         return ApiResponse(ok=True, message="Not connected")
 
-    if _session_logger and _session_logger.is_active:
-        _session_logger.end_session()
-
     await _serial.disconnect()
     return ApiResponse(ok=True, message="Disconnected")
-
-
-# ------------------------------------------------------------------ #
-# Recording (CSV session log) — off by default
-# ------------------------------------------------------------------ #
-
-@router.get("/recording", response_model=RecordingState)
-async def get_recording():
-    return _recording_state()
-
-
-@router.post("/recording/start", response_model=RecordingState)
-async def start_recording():
-    """Start writing telemetry to a new CSV (needs a live ESP32 link)."""
-    if not _session_logger:
-        raise HTTPException(500, "Session logger not initialized")
-    if not (_serial and _serial.is_connected):
-        raise HTTPException(409, "Connect to the ESP32 before recording")
-    _session_logger.start_session()
-    return _recording_state()
-
-
-@router.post("/recording/stop", response_model=RecordingState)
-async def stop_recording():
-    """Close the current CSV (no-op if not recording)."""
-    if _session_logger:
-        _session_logger.end_session()
-    return _recording_state()
 
 
 # ------------------------------------------------------------------ #
@@ -450,21 +413,22 @@ async def sli_reset():
 
 
 # ------------------------------------------------------------------ #
-# Session logs
+# Log files (lift CSVs)
 # ------------------------------------------------------------------ #
 
-@router.get("/logs")
-async def list_logs():
-    """List all saved session CSV files."""
-    if not _session_logger:
-        return {"sessions": []}
-    return {"sessions": _session_logger.list_sessions()}
+def resolve_log(log_dir: Path, filename: str) -> Optional[Path]:
+    """Map a filename from the API to a file inside the log folder, or None.
+    Rejects anything that would escape the folder (e.g. '../../secret')."""
+    candidate = (log_dir / filename).resolve()
+    if candidate.parent != log_dir.resolve() or not candidate.is_file():
+        return None
+    return candidate
 
 
 @router.get("/logs/{filename}")
 async def download_log(filename: str):
-    """Download a specific session log CSV (only files inside the log folder)."""
-    file_path = _session_logger.resolve_log(filename) if _session_logger else None
+    """Download a lift CSV (only files inside the log folder)."""
+    file_path = resolve_log(_log_dir, filename)
     if file_path is None:
         raise HTTPException(404, f"Log file '{filename}' not found")
     return FileResponse(str(file_path), media_type="text/csv", filename=file_path.name)

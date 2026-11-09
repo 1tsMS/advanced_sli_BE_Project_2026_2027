@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { RotateCcw, Ruler, Save, Plus, Trash2 } from "lucide-react";
+import { RotateCcw, Save, Plus, Trash2 } from "lucide-react";
+import { CalSteps } from "./CalSection";
 import type { DebugReport, TelemetryFrame } from "../../types";
 import { encoderDiag } from "./encoderDiag";
 import { useHoldToMove } from "../../hooks/useHoldToMove";
@@ -142,20 +143,11 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
   const shownInvert = manualInvert ?? espInvert ?? cfg.defaultInvert;
 
   return (
-    <div className="cal-item" style={{ border: "1px solid var(--border-accent)" }}>
-      <div className="cal-item-top">
-        <div>
-          <div className="cal-item-name" style={{ color: "var(--cyan)", display: "flex", alignItems: "center", gap: 6 }}>
-            <Ruler size={13} />
-            {cfg.title}
-          </div>
-          <div className="cal-item-sub">{cfg.sub}</div>
-        </div>
-        <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 10 }} onClick={zero} title={cfg.zeroHint}>
-          <RotateCcw size={10} />
-          {cfg.zeroLabel}
-        </button>
-      </div>
+    <div className="cal-body">
+      <CalSteps
+        steps={cfg.steps}
+        action={<button className="btn-primary" onClick={zero} title={cfg.zeroHint}><RotateCcw size={14} /> {cfg.zeroLabel}</button>}
+      />
 
       <div className="tele-cal-box">
         <div className="tele-readout-strip">
@@ -163,19 +155,19 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
             <div>
               <div className="tele-k">Live</div>
               <div className="tele-val-lg" style={{ color: live < -0.2 ? "var(--amber)" : "var(--cyan)" }}>
-                {live >= 0 ? `+${live.toFixed(1)}` : live.toFixed(1)} <span style={{ fontSize: 12, fontWeight: 500 }}>{u}</span>
+                {live >= 0 ? `+${live.toFixed(1)}` : live.toFixed(1)} <span style={{ fontSize: "var(--fs-md)", fontWeight: 500 }}>{u}</span>
               </div>
             </div>
             <div style={{ marginLeft: 16 }}>
               <div className="tele-k">{cfg.stepName}</div>
-              <div className="tele-val-sub" style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 600 }}>
+              <div className="tele-val-sub" style={{ fontSize: "var(--fs-md)", color: "var(--text-primary)", fontWeight: 600 }}>
                 {liveSteps >= 0 ? "+" : ""}{liveSteps.toFixed(cfg.stepDigits)}
               </div>
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
             <div className="tele-k">On the ESP32</div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: loaded ? "var(--text-secondary)" : "var(--amber)" }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-sm)", color: loaded ? "var(--text-secondary)" : "var(--amber)" }}>
               {loaded ? `${espScale!.toFixed(cfg.scaleDigits)} ${cfg.scaleUnit} · inv ${espInvert ? 1 : 0}` : "not loaded: Scan"}
             </div>
           </div>
@@ -187,7 +179,7 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
               {[500, 1000, 2000].map(s => (
                 <button key={s} className={`axis-badge ${jogSpeed === s ? "sel" : ""}`}
-                        style={{ padding: "1px 6px", fontSize: 9 }} onClick={() => setJogSpeed(s)}>
+                        style={{ padding: "1px 6px", fontSize: "var(--fs-xs)" }} onClick={() => setJogSpeed(s)}>
                   {s}
                 </button>
               ))}
@@ -210,18 +202,18 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
           <div className="tele-section-title">
             <span>Ruler Points</span>
             {points.length > 0 && (
-              <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: 9 }} onClick={() => setPoints([])}>
+              <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: "var(--fs-xs)" }} onClick={() => setPoints([])}>
                 <Trash2 size={9} /> Clear
               </button>
             )}
           </div>
           <div className="tele-input-row">
-            <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>Measured</span>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-secondary)" }}>Measured</span>
             <input type="number" step="0.1" className="tele-input" value={measuredMm} placeholder={u}
                    aria-label={`${cfg.title} measured length`}
                    onChange={e => setMeasuredMm(e.target.value)}
                    onKeyDown={e => { if (e.key === "Enter") addPoint(); }} />
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{u}</span>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>{u}</span>
             <button className="btn-ghost" onClick={addPoint} style={{ padding: "4px 10px" }}>
               <Plus size={10} /> Record point
             </button>
@@ -253,7 +245,7 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
           )}
 
           <div className="tele-input-row">
-            <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-secondary)" }}>
               Fitted scale:{" "}
               <span style={{ fontFamily: "var(--font-mono)", color: fit !== null ? "var(--cyan)" : "var(--text-muted)" }}>
                 {fit !== null
@@ -273,7 +265,7 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
         <div className="tele-section-card">
           <div className="tele-section-title">
             <span>Manual Scale</span>
-            <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: 9 }}
+            <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: "var(--fs-xs)" }}
                     onClick={() => saveScale(cfg.defaultScale, cfg.defaultInvert, "Reset to defaults")}>
               Reset Defaults
             </button>
@@ -282,7 +274,7 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
             <input type="number" step="any" className="tele-input"
                    value={manualScale ?? (espScale !== null ? espScale.toFixed(cfg.scaleDigits) : String(cfg.defaultScale))}
                    onChange={e => setManualScale(e.target.value)} />
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{cfg.scaleUnit}</span>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>{cfg.scaleUnit}</span>
             <button className={`axis-badge ${shownInvert ? "sel" : ""}`} style={{ marginLeft: 6 }}
                     onClick={() => setManualInvert(!shownInvert)}>
               Invert: {shownInvert ? "YES" : "NO"}

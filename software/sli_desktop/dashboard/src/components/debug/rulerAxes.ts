@@ -1,7 +1,7 @@
 import type { TelemetryFrame } from "../../types";
 import type { MotionAxis } from "../../hooks/useHoldToMove";
+import { API_BASE } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 
 /** What differs between the telescope (AS5600 turns) and the rope (N20 counts). */
 export interface RulerAxisConfig {
@@ -9,7 +9,8 @@ export interface RulerAxisConfig {
   unit: string;                    // what the ruler / protractor measures: "mm" or "°"
   minSteps: number;                // smallest encoder movement accepted for a point
   title: string;
-  sub: string;
+  summary: string;                 // one line for the collapsed section header
+  steps: string[];                 // how-to, shown as a numbered list
   zeroLabel: string;
   zeroHint: string;
   diagTag: string;                 // AXIS_<tag> line in the DBG report
@@ -36,7 +37,7 @@ export interface RulerAxisConfig {
 }
 
 // config.h ROPE_FIXED_PATH_MM + ROPE_KNOT_TO_HOOK_MM: ropeTotal = drum-side rope + this
-const ROPE_TOTAL_EXTRA_MM = 245 + 90;
+const ROPE_TOTAL_EXTRA_MM = BOOM_BASE_MM + BOOM_HEAD_MM + ROPE_KNOT_TO_HOOK_MM;   // 288 + 76
 
 async function apiPost(path: string, body: object = {}) {
   try {
@@ -52,21 +53,28 @@ async function apiPost(path: string, body: object = {}) {
   }
 }
 
+import { TELE_RETRACTED_MM, BOOM_BASE_MM, BOOM_HEAD_MM, ROPE_KNOT_TO_HOOK_MM } from "../../geometry";
+
 export const TELE_RULER: RulerAxisConfig = {
   key: "tele",
   unit: "mm",
   minSteps: 0.05,
-  title: "Telescope Extension (2-point)",
-  sub: "Point 1: fully retract → Set Zero. Point 2: extend, measure with a ruler, Record point → Save fit. More points = better fit.",
-  zeroLabel: "Set Zero (Retracted)",
-  zeroHint: "Fully retract the telescope, then press: this position becomes 0 mm",
+  title: "Telescope extension",
+  summary: "mm per motor turn, from 2+ ruler points",
+  steps: [
+    "Retract fully, then Set retracted (reads 0 mm, the charts' first column).",
+    "Extend, measure with a ruler, enter it and Record point.",
+    "Repeat 1-2 times (more points = better fit), then Save fit.",
+  ],
+  zeroLabel: `Set retracted (${TELE_RETRACTED_MM} mm)`,
+  zeroHint: `Fully retract the telescope, then press: this position becomes ${TELE_RETRACTED_MM} mm (start of every load chart)`,
   diagTag: "TELE",
   stepName: "turns", stepDigits: 3,
   scaleUnit: "mm/rev", scaleDigits: 4,
   defaultScale: 19.048, defaultInvert: true,   // config.h
   motorAxis: 3, outDir: 1, outLabel: "Extend ►", inLabel: "◄ Retract",
   value: f => f?.extensionMM ?? 0,
-  zero: () => apiPost("/calibrate/tele", {}),
+  zero: () => apiPost("/calibrate/encoder", { axis: "tele", value: TELE_RETRACTED_MM }),
   save: (scale, invert) => apiPost("/calibrate/tele", { scale, invert }),
 };
 
@@ -74,8 +82,13 @@ export const ROPE_RULER: RulerAxisConfig = {
   key: "rope",
   unit: "mm",
   minSteps: 50,
-  title: "Rope Length (2-point, winch)",
-  sub: "Measure load-cell end → knot with a tape. Record a point at the top, pay out, record 2+ more → Save fit. The fit doesn't need the zero to be exact.",
+  title: "Rope length (winch)",
+  summary: "mm per encoder count, from 3+ tape points",
+  steps: [
+    "Wind the hook up, measure load-cell end to knot with a tape, Record point.",
+    "Pay out, measure, Record point. Do this 2+ times.",
+    "Save fit. The zero does not need to be exact: the fit includes an offset.",
+  ],
   zeroLabel: "Set Zero (Hook Up)",
   zeroHint: "Wind the hook fully up, then press: this rope length becomes 0 mm",
   diagTag: "ROPE",
@@ -95,8 +108,13 @@ export const SWING_RULER: RulerAxisConfig = {
   key: "swing",
   unit: "°",
   minSteps: 0.05,
-  title: "Swing Angle (2-point)",
-  sub: "Point 1: turntable at home → Set Zero. Point 2: turn to a marked angle (e.g. 90° with a protractor), enter it, Record point → Save fit.",
+  title: "Swing angle",
+  summary: "degrees per motor turn, from a protractor point",
+  steps: [
+    "Turntable at its home mark, then Set zero.",
+    "Turn to a marked angle (e.g. 90° on a protractor), enter it, Record point.",
+    "Save fit.",
+  ],
   zeroLabel: "Set Zero (Home)",
   zeroHint: "Put the turntable at its home position, then press: this becomes 0°",
   diagTag: "SWING",

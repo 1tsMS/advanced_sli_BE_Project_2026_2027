@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
+import { API_BASE } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 const LEG_NAMES = ["FSR1 (FL)", "FSR2 (FR)", "FSR3 (RL)", "FSR4 (RR)"];
 
-interface TipCfg { legs: number[][]; gains: number[]; minTotal: number; warnPct: number; calibrated: boolean; }
+interface TipCfg { legs: number[][]; gains: number[]; minTotal: number; warnPct: number; calibrated: boolean; craneKg: number; }
 
 /**
  * Outrigger geometry for the tipping margin (backend core/tipping.py).
@@ -68,6 +68,12 @@ export function TippingCard() {
         <span className="form-label">Warn below</span>
         <input className="form-input" type="number" value={cfg.warnPct} onChange={e => setCfg({ ...cfg, warnPct: Number(e.target.value) })} />
         <span className="dl-muted">%</span>
+      </div>
+      <div className="form-row" title="Weigh the whole crane once (bathroom / kitchen scale). Then each pad shows ≈ kg: its share × (crane + hook load).">
+        <span className="form-label">Crane weight</span>
+        <input className="form-input" type="number" step={0.01} value={cfg.craneKg ?? 0}
+               onChange={e => setCfg({ ...cfg, craneKg: Number(e.target.value) })} />
+        <span className="dl-muted">kg (0 = unknown)</span>
       </div>
       <div className="form-btn-row">
         <button className="btn-primary" onClick={() => save(cfg)}>Save geometry</button>

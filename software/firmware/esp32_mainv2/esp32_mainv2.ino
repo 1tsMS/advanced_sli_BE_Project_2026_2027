@@ -134,13 +134,13 @@ void setup() {
     Serial.printf("HX711: %s\n", loadCell.isConnected() ? "DETECTED" : "NOT FOUND");
     fsrReader.begin();
     winchEncoder.begin();                      // PCNT + DRV8833
+    pinMode(FAULT_INJECT_PIN, INPUT_PULLUP);   // test E6 switch (closed = LOW)
 
     Serial2.setTxBufferSize(256);              // M-commands to the Mega never block CommandTask
     megaBridge.begin(&Serial2);
 
-    // --- Shared data defaults ---
+    // --- Shared data defaults (SafetyTask fills the SLI fields on its first cycle) ---
     memset(&sensorData, 0, sizeof(SensorData));
-    sensorData.safeLoadLimit = 5.0f;
     sensorData.sensorsOK = true;
 
     // --- Wire the tasks to their drivers and restore calibration from flash ---
@@ -148,8 +148,7 @@ void setup() {
                     &imu, &loadCell, &fsrReader, &winchEncoder);
     sensorTask_loadCalibration();
     safety_init();
-    commandTask_init(&megaBridge, &winchEncoder, &loadCell,
-                     &imu, &teleEncoder, &swingEncoder, &boomEncoder);
+    commandTask_init(&megaBridge, &winchEncoder, &loadCell, &imu);
 
     // --- Start the tasks (table and reasoning in rtos_config.h) ---
     // Writers first, so nothing is lost when the others start reporting.

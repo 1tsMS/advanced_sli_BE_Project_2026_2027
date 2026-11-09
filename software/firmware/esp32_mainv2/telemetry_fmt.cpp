@@ -2,14 +2,13 @@
 //  Telemetry Formatter — Implementation
 // ============================================================
 #include "telemetry_fmt.h"
+#include "loadcell_health.h"
 #include <stdio.h>
 
 int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufLen) {
-    // Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
-    //            ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-    //            safeLimit,loadPct,alarmLvl,ropeTotalMM,hookDropMM\n
+    // Field order: telemetry_fmt.h
     int written = snprintf(buffer, bufLen,
-        "$T,%.2f,%.1f,%.2f,%.2f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.2f,%.1f,%u,%.1f,%.1f\n",
+        "$T,%.2f,%.1f,%.3f,%.3f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.3f,%.1f,%u,%.1f,%.1f,%.2f,%.1f,%lu\n",
         data.boomAngle,
         data.extensionMM,
         data.loadCellRaw,
@@ -23,7 +22,10 @@ int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufL
         data.loadPercent,
         data.alarmLevel,
         data.ropeTotalMM,
-        data.hookDropMM
+        data.hookDropMM,
+        data.accelDynPk,
+        data.jerkPk,
+        (unsigned long)data.imuRejected
     );
     return written;
 }
@@ -65,6 +67,10 @@ void TelemetryFormatter::formatDebugReport(
     DBG_APPEND("$D,MPU6050,0x%02X,%s\n", MPU6050_ADDR, mpuOK ? "OK" : "FAIL");
     DBG_APPEND("$D,HX711,NA,%s\n", hx711OK ? "OK" : "FAIL");
     DBG_APPEND("$D,HX711_RAW,%ld,%s\n", (long)diag.hx711Raw, hx711OK ? "OK" : "FAIL");
+    // The bridge behind the HX711: a broken wire keeps the HX711 alive but shows here
+    DBG_APPEND("$D,LOAD_CELL,raw:%ld zero:%ld noise:%ld,%s\n", (long)diag.hx711Raw, (long)diag.loadOffset, (long)diag.loadNoise,
+               !hx711OK ? "NO_HX711" : !diag.loadFresh ? "NO_DATA"
+               : loadCellHealthName((LoadCellHealth)diag.loadHealth));
     for (uint8_t i = 0; i < 4; i++) DBG_APPEND("$D,FSR%u,%u\n", (unsigned)(i + 1), (unsigned)fsr[i]);
     DBG_APPEND("$D,N20_TICKS,%ld\n", n20Ticks);
 
@@ -104,12 +110,12 @@ void TelemetryFormatter::formatDebugReport(
                diag.periodMaxMs > 1.5f * SENSOR_PERIOD_MS ? "SLOW" : "OK");
 
     // Which loop stage is slow (worst ms since last DBG), and IMU dropout counters
-    DBG_APPEND("$D,LOOP_STAGES,enc:%.1f save:%.1f mag:%.1f cal:%.1f hwbus:%.1f hx:%.1f imucal:%.1f,%s\n",
-               diag.stageMaxMs[1], diag.stageMaxMs[2], diag.stageMaxMs[3], diag.stageMaxMs[4],
-               diag.stageMaxMs[5], diag.stageMaxMs[6], diag.stageMaxMs[0],
+    DBG_APPEND("$D,LOOP_STAGES,enc:%.1f save:%.1f mag:%.1f cal:%.1f hwbus:%.1f hx:%.1f,%s\n",
+               diag.stageMaxMs[0], diag.stageMaxMs[1], diag.stageMaxMs[2], diag.stageMaxMs[3],
+               diag.stageMaxMs[4], diag.stageMaxMs[5],
                diag.periodMaxMs > 1.5f * SENSOR_PERIOD_MS ? "SLOW" : "OK");
-    DBG_APPEND("$D,IMU_DROPOUTS,reinit:%lu rejected:%lu,%s\n",
-               (unsigned long)diag.imuReconnects, (unsigned long)diag.imuRejected,
+    DBG_APPEND("$D,IMU_DROPOUTS,reinit:%lu rejected:%lu accel_scale:%.3f,%s\n",
+               (unsigned long)diag.imuReconnects, (unsigned long)diag.imuRejected, diag.imuAccelScale,
                diag.imuReconnects ? "NOISY" : "OK");
 
     // RTOS health: stack headroom per task (bytes never used), serial queue, flash, reset cause

@@ -21,6 +21,8 @@
 //    SLI ON          → SLI armed (ends a bypass)
 //    SLI BYPASS 300  → Disable the motion cut for 300 s (max 600; E-stop still works)
 //    SLI OFF         → Disable the motion cut until SLI ON or reboot (E-stop still works)
+//    SLI CUT P|R|S   → Cut mode: predictive (default) / reactive / speed-aware (test E5)
+//    DRV IDLE 1|0    → Mega switches idle A4988 drivers off (1, default) or keeps them on (0)
 //    RST             → Clear a latched E-stop
 //    SHP 1 [L<mm>]   → Swing input shaping on (L = pendulum length override, 0/omitted = from hook drop)
 //    SHP 0           → Swing input shaping off
@@ -54,7 +56,8 @@ enum CommandType {
     CMD_LOADCHART,     // LC ...
     CMD_SLI,           // SLI ON / SLI BYPASS <s>
     CMD_RESET,         // RST
-    CMD_SHAPE          // SHP 0 / SHP 1 [L<mm>]
+    CMD_SHAPE,         // SHP 0 / SHP 1 [L<mm>]
+    CMD_DRIVER         // DRV IDLE 0|1
 };
 
 /**
@@ -75,9 +78,13 @@ struct ParsedCommand {
     float        encValue;    // Filled for CAL_ENC_REF (deg, or mm for the telescope)
     int8_t       encInvert;   // Filled for CAL_ENC_INVERT / CAL_AXIS_SCALE (0 or 1, -1 = keep)
     uint8_t      calSub;      // CAL_LOAD: 0 = record weight W, 1 = CLEAR points, 2 = set scale S
+                              // CAL_LOAD_ANGLE: 0 = capture W, 1 = CLEAR, 2 = set phi P, 3 = OFF
     const char*  args;        // CMD_LOADCHART: text after "LC" (points into the caller's line)
     uint16_t     bypassS;     // CMD_SLI: bypass seconds, 0 = arm
     bool         sliOff;      // CMD_SLI: SLI OFF
+    bool         sliCut;      // CMD_SLI: SLI CUT <mode> (cutMode is valid)
+    uint8_t      cutMode;     // CMD_SLI: SliCutMode (0 P, 1 R, 2 S)
+    bool         drvIdle;     // CMD_DRIVER: release idle drivers
     bool         shapeOn;     // CMD_SHAPE
     float        shapeLenMm;  // CMD_SHAPE: pendulum length override, 0 = from hook drop
 };

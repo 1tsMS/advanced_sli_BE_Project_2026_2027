@@ -8,10 +8,11 @@ import {
   DERIVE_PRESETS, LC_MAX_ZONES,
 } from "./chartMath";
 import { liveSafety, useNow, type ReceivedSafety } from "../sli/sliStatus";
+import { API_BASE } from "../../api";
+import { BOOM_BASE_MM, BOOM_HEAD_MM } from "../../geometry";
 
-const API = "http://localhost:8000/api";
-const BOOM_BASE_KEY = "sli.boomBaseMm";
-const BOOM_BASE_DEFAULT = 225;   // firmware config.h BASE_BOOM_LENGTH_MM
+const BOOM_BASE_KEY = "sli.boomArmMm";
+const BOOM_BASE_DEFAULT = BOOM_BASE_MM + BOOM_HEAD_MM;   // pivot to the hook at 0 mm extension (geometry.ts)
 
 interface LoadChartTabProps {
   frame: TelemetryFrame | null;
@@ -24,7 +25,7 @@ const UPLOAD_TIMEOUT_MS = 4000;
 
 async function call(method: string, path: string, body?: unknown): Promise<{ ok: boolean; data: any }> {
   try {
-    const res = await fetch(`${API}${path}`, {
+    const res = await fetch(`${API_BASE}${path}`, {
       method,
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
@@ -216,11 +217,13 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
       {/* ===== Profiles ===== */}
       <div className="panel lc-profiles">
         <div className="panel-header">
-          <span className="ph-icon">◈</span> Profiles
-          <button className="btn-ghost lc-hdr-btn" title="New blank chart"
-                  onClick={() => startNew(blankProfile(uniqueName("New chart", names)))}>
-            <Plus size={11} /> New
-          </button>
+          <span className="step-n">1</span> Pick a profile
+          <span className="ph-right">
+            <button className="btn-ghost btn-sm" title="New blank chart"
+                    onClick={() => startNew(blankProfile(uniqueName("New chart", names)))}>
+              <Plus size={14} /> New
+            </button>
+          </span>
         </div>
         <div className="panel-body lc-prof-list">
           {profiles === null && <div className="lc-empty">Loading…</div>}
@@ -279,8 +282,15 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
       {/* ===== Editor ===== */}
       <div className="panel lc-editor">
         <div className="panel-header">
-          <span className="ph-icon">◈</span> Rated capacity chart
-          {dirty && <span className="lc-dirty" title="Unsaved changes">● unsaved</span>}
+          <span className="step-n">2</span> Edit rated capacity
+          <span className="ph-right">
+            {dirty && <span className="state-chip warn" title="Unsaved changes">Unsaved</span>}
+            {draft && (
+              <button className="btn-primary btn-sm" onClick={save} disabled={!!error || !dirty}>
+                <Save size={14} /> Save
+              </button>
+            )}
+          </span>
         </div>
         {!draft ? (
           <div className="lc-empty" style={{ margin: 16 }}>Pick a profile or create a new one.</div>
@@ -324,7 +334,7 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
             <div className="tele-section-card">
               <div className="tele-section-title">
                 <span>Swing zones (capacity × factor)</span>
-                <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: 9 }}
+                <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: "var(--fs-xs)" }}
                         disabled={draft.zones.length >= LC_MAX_ZONES}
                         onClick={() => edit({ ...draft, zones: [...draft.zones, { fromDeg: 135, toDeg: 225, factor: 1 }] })}>
                   <Plus size={9} /> Zone
@@ -354,28 +364,7 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
               })}
             </div>
 
-            {error && <div className="lc-error">⚠ {error}</div>}
-
-            <div className="lc-actions">
-              <button className="btn-primary" onClick={save} disabled={!!error || !dirty}>
-                <Save size={11} /> Save
-              </button>
-              <button className="btn-primary" onClick={upload} disabled={dirty || !selected || !!error || sending}
-                      title={dirty ? "Save first: the upload sends the saved profile" : "Send to the ESP32 (replaces its chart)"}>
-                <Upload size={11} /> {sending ? "Sending…" : "Upload to crane"}
-              </button>
-              <button className="btn-ghost" onClick={readback} title="Read the chart the ESP32 is enforcing">
-                <Download size={11} /> Read from crane
-              </button>
-              {craneChart && (
-                <span className={`lc-compare ${crane ? (craneMatches ? "ok" : "diff") : "none"}`}>
-                  {!crane ? "Crane has no chart" : craneMatches ? "Matches the crane" : `Crane runs "${crane.name}" (differs)`}
-                </span>
-              )}
-            </div>
-            {(uploadMsg ?? msg) && (
-              <div className={`lc-msg ${(uploadMsg ?? msg)!.kind}`}>{(uploadMsg ?? msg)!.text}</div>
-            )}
+            {error && <div className="lc-error">△ {error}</div>}
           </div>
         )}
       </div>
@@ -384,7 +373,7 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
       <div className="lc-right">
         <div className="panel lc-diagram-panel">
           <div className="panel-header">
-            <span className="ph-icon">◈</span> Range diagram
+            Range diagram
             <label className="lc-base" title="Boom length from pivot to tip at 0 mm extension. Drawing only: the SLI uses angle × extension.">
               boom @0 mm
               <input className="tele-input lc-num" type="number" value={boomBase}
@@ -403,7 +392,24 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
         </div>
 
         <div className="panel lc-live">
-          <div className="panel-header"><span className="ph-icon">◈</span> Live</div>
+          <div className="panel-header"><span className="step-n">3</span> Upload and check on the crane</div>
+          <div className="lc-actions">
+            <button className="btn-primary" onClick={upload} disabled={!draft || dirty || !selected || !!error || sending}
+                    title={dirty ? "Save first: the upload sends the saved profile" : "Send to the ESP32 (replaces its chart)"}>
+              <Upload size={14} /> {sending ? "Sending…" : "Upload to crane"}
+            </button>
+            <button className="btn-ghost" onClick={readback} title="Read the chart the ESP32 is enforcing">
+              <Download size={14} /> Read from crane
+            </button>
+            {craneChart && (
+              <span className={`state-chip ${crane ? (craneMatches ? "ok" : "warn") : "warn"}`}>
+                {!crane ? "△ Crane has no chart" : craneMatches ? "Matches the crane" : `△ Crane runs "${crane.name}"`}
+              </span>
+            )}
+          </div>
+          {(uploadMsg ?? msg) && (
+            <div className={`lc-msg ${(uploadMsg ?? msg)!.kind}`}>{(uploadMsg ?? msg)!.text}</div>
+          )}
           <div className="lc-live-grid">
             <div>
               <div className="tele-k">SLI on the crane</div>
@@ -432,7 +438,7 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
             <div>
               <div className="tele-k">Headroom before cut</div>
               {room === null ? <div className="lc-live-v">–</div>
-                : room.boomDownDeg === null ? <div className="lc-live-v" style={{ color: "var(--red)" }}>at limit</div>
+                : room.boomDownDeg === null ? <div className="lc-live-v crit">▲ at limit</div>
                 : (
                   <>
                     <div className="lc-live-v">↓ {room.boomDownDeg.toFixed(1)}°</div>

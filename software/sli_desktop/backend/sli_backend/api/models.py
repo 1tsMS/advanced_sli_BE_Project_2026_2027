@@ -20,12 +20,16 @@ class TelemetryFrame(BaseModel):
     ropeLength:    float = 0.0   # mm, calibrated: load-cell end to the knot
     ropeTotal:     float = 0.0   # mm, ropeLength + fixed path + knot-to-hook (0 = old firmware)
     hookDrop:      float = 0.0   # mm, load-cell end to hook tip (0 = old firmware)
-    fsr:           List[int] = [0, 0, 0, 0]  # ADC 0-4095 per outrigger
+    fsr:           List[int] = [0, 0, 0, 0]  # ADC counts per outrigger, 0-4095 = 0-3.3 V (smoothed on the ESP32)
     imuRoll:       float = 0.0   # degrees
     imuPitch:      float = 0.0   # degrees
     safeLoadLimit: float = 5.0   # kg
     loadPercent:   float = 0.0   # 0-100+
     alarmLevel:    int   = 0     # 0=OK, 1=WARN, 2=CRITICAL, 3=ESTOP
+    # Boom-tip IMU (firmware from 2026-11-07; 0 for older firmware)
+    accelDyn:      float = 0.0   # m/s^2 beyond gravity, peak since the previous frame
+    jerk:          float = 0.0   # m/s^3, peak since the previous frame
+    imuRejected:   int   = 0     # corrupted IMU samples skipped since the ESP32 booted
     timestamp:     float = 0.0   # Unix timestamp (added by backend)
     # Tipping margin from the FSRs (computed by the backend, core/tipping.py)
     tipValid:      bool  = False
@@ -33,6 +37,8 @@ class TelemetryFrame(BaseModel):
     copX:          Optional[float] = None   # mm
     copY:          Optional[float] = None   # mm
     tipWarn:       bool  = False
+    fsrShare:      Optional[List[float]] = None   # each pad's share of the total pad force (0-1)
+    padKg:         Optional[List[float]] = None   # approx kg on each pad (needs the crane weight)
 
 
 class DebugEntry(BaseModel):
@@ -93,19 +99,13 @@ class SafetyStatus(BaseModel):
     chart:       str = "NONE"
     mode:        str = "ARMED"   # ARMED | BYPASS | OFF (state/blocked are enforced only when ARMED)
     why:         str = "-"       # - | NO_CHART | SENSOR:IMU+LOAD.. | LOAD_RANGE | BAD_VALUE | OUTSIDE
+    cutMode:     str = "P"       # P predictive | R reactive | S speed-aware (test E5)
+    drvIdle:     Optional[bool] = None   # Mega releases idle A4988s (None = older firmware)
     timestamp:   float = 0.0
 
 
 class BypassRequest(BaseModel):
     seconds: int
-
-
-class RecordingState(BaseModel):
-    """CSV recording state (recording is off until the dashboard starts it)."""
-    recording:  bool = False
-    file:       Optional[str] = None   # file name while recording
-    rows:       int = 0
-    elapsedSec: float = 0.0
 
 
 class StatusResponse(BaseModel):
@@ -115,7 +115,6 @@ class StatusResponse(BaseModel):
     baudRate:    Optional[int] = None
     rxRate:      float = 0.0   # Actual measured telemetry packets/sec
     backendOK:   bool = True
-    recording:   Optional[RecordingState] = None
 
 
 class EncoderCalibrateRequest(BaseModel):
@@ -167,6 +166,11 @@ class LiftStartRequest(BaseModel):
     note:     str = ""
 
 
+class LiftRenameRequest(BaseModel):
+    name: Optional[str] = None    # None = leave as is
+    note: Optional[str] = None
+
+
 class OperatorRequest(BaseModel):
     name: str
 
@@ -183,6 +187,7 @@ class TippingSettings(BaseModel):
     minTotal:   float = 0.05
     warnPct:    float = 30.0
     calibrated: bool = False
+    craneKg:    float = 0.0            # whole crane weight on the pads (0 = unknown)
 
 
 class ApiResponse(BaseModel):

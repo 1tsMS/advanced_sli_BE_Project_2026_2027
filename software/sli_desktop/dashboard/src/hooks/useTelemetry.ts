@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback, type RefObject } from "react";
-import type { TelemetryFrame, DebugReport, RecordingState, SafetyStatus, LoadChartProfile, LivePoint, ShapingState } from "../types";
+import type { TelemetryFrame, DebugReport, SafetyStatus, LoadChartProfile, LivePoint, ShapingState, Capture } from "../types";
+import { ShockFilter, PeakHold } from "../components/telemetry/shock";
+import { API_BASE, WS_URL } from "../api";
 
-const WS_URL = "ws://localhost:8000/ws/telemetry";
-const STATUS_URL = "http://localhost:8000/api/status";
+const STATUS_URL = `${API_BASE}/status`;
 const RECONNECT_DELAY = 3000;
 const HISTORY_S = 60;          // rolling window kept for the live charts
+export const CAPTURE_S = 300;  // "5-min capture" length
 
 export type WsStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -14,10 +16,6 @@ interface UseTelemetryReturn {
   lastAck: string | null;
   wsStatus: WsStatus;
   espConnected: boolean;
-  /** receivedAt: Date.now() when this state arrived (lets the REC timer tick between polls) */
-  recording: RecordingState & { receivedAt: number };
-  /** Re-read /api/status now (e.g. right after toggling recording). */
-  refreshStatus: () => void;
   /** Latest $S from the ESP32 (null until one arrives). receivedAt drives the stale check. */
   safety: (SafetyStatus & { receivedAt: number }) | null;
   /** Chart read back from the ESP32 (LC GET): undefined = not asked, null = the ESP32 has none. */
@@ -30,11 +28,13 @@ interface UseTelemetryReturn {
   /** Last HISTORY_S seconds of telemetry, oldest first. A ref (not state): the live
    *  charts read it on their own timer, so 50 Hz frames don't re-render them. */
   history: RefObject<LivePoint[]>;
+  /** 5-min capture (Data > Live): filled from start() until CAPTURE_S, then stops by itself. */
+  capture: RefObject<Capture>;
+  startCapture: () => void;
+  stopCapture: () => void;
   /** Swing input shaping as last reported by the ESP32 (null = not reported since connect). */
   shaping: ShapingState | null;
 }
-
-const NOT_RECORDING: RecordingState = { recording: false, file: null, rows: 0, elapsedSec: 0 };
 
 /**
  * useTelemetry — connects to the Python backend WebSocket and
@@ -47,15 +47,16 @@ export function useTelemetry(): UseTelemetryReturn {
   const [lastAck, setLastAck] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<WsStatus>("disconnected");
   const [espConnected, setEspConnected] = useState<boolean>(false);
-  const [recording, setRecording] = useState<RecordingState & { receivedAt: number }>(
-    () => ({ ...NOT_RECORDING, receivedAt: 0 })
-  );
   const [safety, setSafety] = useState<UseTelemetryReturn["safety"]>(null);
   const [craneChart, setCraneChart] = useState<UseTelemetryReturn["craneChart"]>(undefined);
   const [lcResult, setLcResult] = useState<UseTelemetryReturn["lcResult"]>({ text: "", seq: 0 });
   const [sliBlock, setSliBlock] = useState<UseTelemetryReturn["sliBlock"]>({ text: "", seq: 0 });
   const [shaping, setShaping] = useState<ShapingState | null>(null);
   const history = useRef<LivePoint[]>([]);
+  const capture = useRef<Capture>({ active: false, t0: 0, points: [] });
+  const shock = useRef({ accel: new ShockFilter(250, 0.05), jerk: new ShockFilter(250, 2), peak: new PeakHold(2000) });
+  const startCapture = useCallback(() => { capture.current = { active: true, t0: 0, points: [] }; }, []);
+  const stopCapture = useCallback(() => { capture.current.active = false; }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -70,11 +71,9 @@ export function useTelemetry(): UseTelemetryReturn {
       const data = await res.json();
       const hasRecentData = Date.now() - lastTelemetryTime.current < 2500;
       setEspConnected(!!data.connected || hasRecentData);
-      setRecording({ ...(data.recording ?? NOT_RECORDING), receivedAt: Date.now() });
     } catch {
       const hasRecentData = Date.now() - lastTelemetryTime.current < 2500;
       setEspConnected(hasRecentData);
-      setRecording({ ...NOT_RECORDING, receivedAt: Date.now() });
     }
   }, []);
 
@@ -89,6 +88,8 @@ export function useTelemetry(): UseTelemetryReturn {
       if (!mountedRef.current) return;
       setWsStatus("connected");
       checkStatus();
+      // Ask the ESP32 which chart it enforces, so the dashboard can say WHY a pose is outside it
+      fetch(`${API_BASE}/loadchart/readback`, { method: "POST" }).catch(() => null);
     };
 
     ws.onmessage = (event) => {
@@ -97,12 +98,28 @@ export function useTelemetry(): UseTelemetryReturn {
         const msg = JSON.parse(event.data as string);
         if (msg.type === "telemetry") {
           const f = msg as TelemetryFrame;
+          // Shocks only: the idle wobble is taken out before anything is drawn
+          const s = shock.current;
+          f.accelShock = s.accel.push(f.accelDyn ?? 0);
+          f.jerkShock = s.jerk.push(f.jerk ?? 0);
+          f.accelPeak = s.peak.push(f.accelShock, f.timestamp * 1000);
           setFrame(f);
+          const p: LivePoint = {
+            t: 0, ts: f.timestamp, load: f.actualLoad, cap: f.safeLoadLimit,
+            pct: f.safeLoadLimit > 0 ? f.loadPercent : null,
+            boom: f.boomAngle, swing: f.swingAngle, ext: f.extensionMM, hookDrop: f.hookDrop,
+            tip: f.tipValid ? (f.tipMargin ?? null) : null,
+            accel: f.accelShock, jerk: f.jerkShock,
+          };
           const h = history.current;
-          h.push({ t: 0, ts: f.timestamp, load: f.actualLoad, cap: f.safeLoadLimit, pct: f.loadPercent,
-                   boom: f.boomAngle, swing: f.swingAngle, ext: f.extensionMM, hookDrop: f.hookDrop,
-                   tip: f.tipValid ? (f.tipMargin ?? null) : null });
+          h.push(p);
           while (h.length && f.timestamp - h[0].ts > HISTORY_S) h.shift();
+          const c = capture.current;
+          if (c.active) {
+            if (!c.points.length) c.t0 = f.timestamp;
+            if (f.timestamp - c.t0 <= CAPTURE_S) c.points.push(p);
+            else c.active = false;
+          }
           lastTelemetryTime.current = Date.now();
           setEspConnected(true);
         } else if (msg.type === "debug") {
@@ -160,6 +177,6 @@ export function useTelemetry(): UseTelemetryReturn {
     };
   }, [connect, checkStatus]);
 
-  return { frame, debugReport, lastAck, wsStatus, espConnected, recording, refreshStatus: checkStatus,
-           safety, craneChart, lcResult, sliBlock, history, shaping };
+  return { frame, debugReport, lastAck, wsStatus, espConnected,
+           safety, craneChart, lcResult, sliBlock, history, capture, startCapture, stopCapture, shaping };
 }

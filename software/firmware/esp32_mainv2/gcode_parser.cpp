@@ -107,6 +107,20 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
                 if (!(out->encValue > 0.0f)) return PARSE_INVALID_PARAMS;
                 return PARSE_OK;
             }
+            case '9': {
+                // CAL9 W<kg> capture / CAL9 P<deg> set phi / CAL9 OFF / CAL9 CLEAR
+                out->calType = CAL_LOAD_ANGLE;
+                if (strstr(line + 4, "CLEAR")) { out->calSub = 1; return PARSE_OK; }
+                if (strstr(line + 4, "OFF"))   { out->calSub = 3; return PARSE_OK; }
+                const float w = extractFloatParam(line + 4, 'W', 0.0f);
+                if (w > 0.0f) { out->calSub = 0; out->encValue = w; return PARSE_OK; }
+                if (strchr(line + 4, 'P')) {
+                    out->calSub   = 2;
+                    out->encValue = extractFloatParam(line + 4, 'P', 0.0f);
+                    return PARSE_OK;
+                }
+                return PARSE_INVALID_PARAMS;
+            }
             case '6': {
                 out->calType  = CAL_ROPE_SCALE;
                 out->encAxis  = 3;
@@ -125,10 +139,23 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
         return PARSE_OK;
     }
 
-    // --- SLI ON / SLI BYPASS <s> ---
+    // --- SLI ON / OFF / BYPASS <s> / CUT P|R|S ---
     if (strncmp(line, "SLI", 3) == 0) {
         out->type = CMD_SLI;
         out->sliOff = false;
+        const char* cut = strstr(line + 3, "CUT");
+        if (cut) {
+            cut += 3;
+            while (*cut == ' ') cut++;
+            switch (toupper(*cut)) {
+                case 'P': out->cutMode = 0; break;
+                case 'R': out->cutMode = 1; break;
+                case 'S': out->cutMode = 2; break;
+                default:  return PARSE_INVALID_PARAMS;
+            }
+            out->sliCut = true;
+            return PARSE_OK;
+        }
         if (strstr(line + 3, "OFF")) { out->sliOff = true; return PARSE_OK; }
         if (strstr(line + 3, "ON"))  { out->bypassS = 0; return PARSE_OK; }
         const char* b = strstr(line + 3, "BYPASS");
@@ -150,6 +177,18 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
         out->shapeOn    = (*p == '1');
         out->shapeLenMm = extractFloatParam(p + 1, 'L', 0.0f);
         if (out->shapeLenMm < 0.0f) return PARSE_INVALID_PARAMS;
+        return PARSE_OK;
+    }
+
+    // --- DRV IDLE 0|1: A4988 release when idle (Mega) ---
+    if (strncmp(line, "DRV", 3) == 0) {
+        const char* p = strstr(line + 3, "IDLE");
+        if (!p) return PARSE_INVALID_PARAMS;
+        p += 4;
+        while (*p == ' ') p++;
+        if (*p != '0' && *p != '1') return PARSE_INVALID_PARAMS;
+        out->type    = CMD_DRIVER;
+        out->drvIdle = (*p == '1');
         return PARSE_OK;
     }
 

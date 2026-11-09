@@ -15,12 +15,11 @@ static const uint8_t REG_WHO_AM_I     = 0x75;
 
 static const float ACCEL_LSB_PER_G  = 4096.0f;   // +/-8 g
 static const float GYRO_LSB_PER_DPS = 65.5f;     // +/-500 deg/s
-static const float G_MS2            = 9.80665f;
 
 bool MPU6050Driver::configure() {
     return _bus->writeReg(_addr, REG_PWR_MGMT_1,   0x01) &&   // wake, clock = PLL gyro X
            _bus->writeReg(_addr, REG_SMPLRT_DIV,   0x00) &&
-           _bus->writeReg(_addr, REG_CONFIG,       0x06) &&   // DLPF 5 Hz (accel ~19 ms delay)
+           _bus->writeReg(_addr, REG_CONFIG,       0x04) &&   // DLPF 21 Hz (~8.5 ms delay): anti-alias for 100 Hz
            _bus->writeReg(_addr, REG_GYRO_CONFIG,  0x08) &&   // +/-500 deg/s
            _bus->writeReg(_addr, REG_ACCEL_CONFIG, 0x10);     // +/-8 g
 }
@@ -51,9 +50,9 @@ bool MPU6050Driver::readSample(float* ax, float* ay, float* az, float* gx, float
     uint8_t b[14];
     if (!_bus->readRegs(_addr, REG_ACCEL_XOUT_H, b, sizeof(b))) return false;
     auto s16 = [&](int i) { return (int16_t)((b[i] << 8) | b[i + 1]); };
-    *ax = s16(0)  / ACCEL_LSB_PER_G * G_MS2;
-    *ay = s16(2)  / ACCEL_LSB_PER_G * G_MS2;
-    *az = s16(4)  / ACCEL_LSB_PER_G * G_MS2;
+    *ax = s16(0)  / ACCEL_LSB_PER_G * IMU_G;
+    *ay = s16(2)  / ACCEL_LSB_PER_G * IMU_G;
+    *az = s16(4)  / ACCEL_LSB_PER_G * IMU_G;
     *gx = s16(8)  / GYRO_LSB_PER_DPS;
     *gy = s16(10) / GYRO_LSB_PER_DPS;
     *gz = s16(12) / GYRO_LSB_PER_DPS;
@@ -93,7 +92,7 @@ void MPU6050Driver::update() {
         return;
     }
 
-    // Step gate: behind the 5 Hz DLPF the gyro cannot change by more than
+    // Step gate: behind the 21 Hz DLPF the gyro cannot change by more than
     // GYRO_STEP_MAX between 10 ms samples on a slow crane. A corrupted gyro byte
     // that still lands under 300 deg/s would otherwise be integrated into a
     // fake swing of tens of degrees. A new level that persists is accepted.
@@ -107,58 +106,47 @@ void MPU6050Driver::update() {
     _prevGx = gx; _prevGy = gy; _prevGz = gz;
     _hasPrevGyro = true;
 
-    // Non-blocking gyro calibration in progress: collect instead of filtering
+    // Non-blocking calibration in progress: collect instead of filtering
     if (_calTarget) {
-        _calSum[0] += gx; _calSum[1] += gy; _calSum[2] += gz;
-        _calAccel[0] = ax; _calAccel[1] = ay; _calAccel[2] = az;
-        if (++_calCount >= _calTarget) {
-            finishCalibration(_calSum[0], _calSum[1], _calSum[2], _calCount,
-                              _calAccel[0], _calAccel[1], _calAccel[2]);
+        _cal.add(ax, ay, az, gx, gy, gz);
+        if (_cal.n >= _calTarget) {
+            finishCalibration(_cal);
             _calTarget = 0;
             _calDone   = true;
         }
         return;
     }
 
-    _accelX = ax; _accelY = ay; _accelZ = az;
-    _gyroX = gx - _gyroOffsetX;
-    _gyroY = gy - _gyroOffsetY;
-    _gyroZ = gz - _gyroOffsetZ;
-
     const uint32_t now = micros();
     float dt = (now - _lastUpdateUs) / 1000000.0f;
     _lastUpdateUs = now;
     if (dt <= 0.0f || dt > 0.1f) dt = 0.01f;
 
-    // Accelerometer tilt (degrees)
-    const float accelRoll  = atan2f(_accelY, _accelZ) * 180.0f / PI;
-    const float accelPitch = atan2f(-_accelX, sqrtf(_accelY * _accelY + _accelZ * _accelZ)) * 180.0f / PI;
-
-    // Complementary filter, wrap-safe: pull the gyro prediction toward the
-    // accel angle by the SHORTEST way round. A plain weighted average of +179
-    // and -179 gives ~+172 instead of 180, so a sensor sitting near +/-180 roll
-    // (Z axis pointing down) swung wildly across the whole range.
-    const float rollPred  = wrapDeg180(_roll  + _gyroX * dt);
-    const float pitchPred = _pitch + _gyroY * dt;
-    _roll  = wrapDeg180(rollPred + (1.0f - ALPHA) * wrapDeg180(accelRoll - rollPred));
-    _pitch = pitchPred + (1.0f - ALPHA) * (accelPitch - pitchPred);
+    const Vec3 a = { ax * _accelScale, ay * _accelScale, az * _accelScale };
+    const Vec3 g = { gx - _gyroOffsetX, gy - _gyroOffsetY, gz - _gyroOffsetZ };
+    _out = _filter.update(a, g, dt);
 }
 
-void MPU6050Driver::finishCalibration(float sx, float sy, float sz, uint16_t n,
-                                      float ax, float ay, float az) {
-    if (n == 0) return;
-    _gyroOffsetX = sx / n;
-    _gyroOffsetY = sy / n;
-    _gyroOffsetZ = sz / n;
-    // Seed the filter with the gravity vector so it doesn't slowly converge from 0
-    _roll  = atan2f(ay, az) * 180.0f / PI;
-    _pitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * 180.0f / PI;
+void MPU6050Driver::finishCalibration(const CalSums& c) {
+    if (c.n == 0) return;
+    _gyroOffsetX = (float)(c.g[0] / c.n);
+    _gyroOffsetY = (float)(c.g[1] / c.n);
+    _gyroOffsetZ = (float)(c.g[2] / c.n);
+    const Vec3 mean = { (float)(c.a[0] / c.n), (float)(c.a[1] / c.n), (float)(c.a[2] / c.n) };
+    const float len = vecLen(mean);
+    // At rest the accelerometer must read exactly 1 g. Cheap MPU6050 clones read
+    // 10-20 % off; with the scale left at 1.0 the filter's |a| gate (15 %) then
+    // distrusts EVERY sample: the angle runs on the gyro alone and drifts, and the
+    // boom-tip acceleration shows a constant ~1.7 m/s^2 at rest (bench, 2026-11-09).
+    // Accept anything the plausibility check lets through (0.5-2 g).
+    if (len > 0.5f * IMU_G && len < 2.0f * IMU_G) _accelScale = IMU_G / len;
+    _filter.seed({ mean.x * _accelScale, mean.y * _accelScale, mean.z * _accelScale });
+    _out = { _filter.roll(), _filter.pitch(), 0.0f, 0.0f };
     _lastUpdateUs = micros();
 }
 
 void MPU6050Driver::startGyroCalibration(uint16_t samples) {
-    _calSum[0] = _calSum[1] = _calSum[2] = 0.0f;
-    _calCount  = 0;
+    _cal       = CalSums();
     _calDone   = false;
     _calTarget = samples ? samples : 1;
 }
@@ -171,19 +159,14 @@ bool MPU6050Driver::takeGyroCalibrationDone() {
 
 void MPU6050Driver::calibrateGyro(uint16_t samples) {
     if (!_connected) return;
-    float sx = 0.0f, sy = 0.0f, sz = 0.0f;
-    float ax = 0.0f, ay = 0.0f, az = 1.0f;
-    uint16_t valid = 0;
+    CalSums c;
     for (uint16_t i = 0; i < samples; i++) {
-        float tax, tay, taz, gx, gy, gz;
-        if (readSample(&tax, &tay, &taz, &gx, &gy, &gz) &&
+        float ax, ay, az, gx, gy, gz;
+        if (readSample(&ax, &ay, &az, &gx, &gy, &gz) &&
             fabsf(gx) < 300.0f && fabsf(gy) < 300.0f && fabsf(gz) < 300.0f) {
-            sx += gx; sy += gy; sz += gz;
-            ax = tax; ay = tay; az = taz;
-            valid++;
+            c.add(ax, ay, az, gx, gy, gz);
         }
         delay(2);
     }
-    finishCalibration(sx, sy, sz, valid, ax, ay, az);
-    _lastUpdateUs = micros();
+    finishCalibration(c);
 }

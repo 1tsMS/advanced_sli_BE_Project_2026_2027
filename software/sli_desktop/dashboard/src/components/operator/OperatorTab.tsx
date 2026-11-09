@@ -5,13 +5,7 @@ import { fetchLifts, fetchReport, liftLabel } from "../datalogger/DataLoggerTab"
 import { PhaseBar } from "../datalogger/LiftReview";
 import { fmtS } from "../datalogger/chartKit";
 import "../datalogger/datalogger.css";
-
-const API_BASE = "http://localhost:8000/api";
-
-function money(v: number, currency: string): string {
-  const sym = currency === "INR" ? "₹" : currency + " ";
-  return `${sym}${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
+import { API_BASE } from "../../api";
 
 const PEN_LABEL: Record<string, string> = {
   cutEvent: "Each entry into CUT", warnEvent: "Each entry into WARN", cutPerS: "Per second in CUT",
@@ -19,19 +13,26 @@ const PEN_LABEL: Record<string, string> = {
   refusal: "Each motion refused by SLI", estop: "Each E-stop", sliNotArmed: "Lift with SLI not armed",
 };
 
+type Section = "safety" | "timeline" | "lifts";
+const SECTIONS: { id: Section; label: string }[] = [
+  { id: "safety", label: "Safety" },
+  { id: "timeline", label: "Timeline" },
+  { id: "lifts", label: "All lifts" },
+];
+
 function ScoreBar({ label, value, max, note }: { label: string; value: number; max: number; note: string }) {
   return (
-    <div className="op-bar">
-      <div className="op-bar-top"><span>{label}</span><b>{value.toFixed(1)} / {max}</b></div>
+    <div>
+      <div className="op-bar-top"><span>{label}</span><b>{value.toFixed(1)} <small>/ {max}</small></b></div>
       <div className="op-bar-track"><span style={{ width: `${(value / max) * 100}%` }} /></div>
-      <div className="dl-muted">{note}</div>
+      <div className="op-bar-note">{note}</div>
     </div>
   );
 }
 
-function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Metric({ label, value, level = "", hint }: { label: string; value: string; level?: "" | "warn" | "crit"; hint?: string }) {
   return (
-    <div className="dl-stat" title={hint}>
+    <div className={`dl-stat ${level}`} title={hint}>
       <span className="dl-stat-label">{label}</span>
       <span className="dl-stat-val">{value}</span>
     </div>
@@ -44,13 +45,6 @@ function SettingsEditor({ onSaved }: { onSaved: () => void }) {
   useEffect(() => { fetch(`${API_BASE}/lift/settings`).then(r => r.json()).then(setS).catch(() => setS(null)); }, []);
   if (!s) return <div className="dl-muted">Backend offline.</div>;
   const pen = s.pen as Record<string, number>;
-  const num = (k: string, label: string, step = 1) => (
-    <label className="op-field" key={k}>
-      <span>{label}</span>
-      <input className="form-input" type="number" step={step} value={s[k] as number}
-             onChange={e => setS({ ...s, [k]: Number(e.target.value) })} />
-    </label>
-  );
   const save = async () => {
     const r = await fetch(`${API_BASE}/lift/settings`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s),
@@ -58,26 +52,23 @@ function SettingsEditor({ onSaved }: { onSaved: () => void }) {
     setMsg(r?.ok ? "Saved. Re-score lifts to apply." : "Save failed");
     if (r?.ok) onSaved();
   };
+  const field = (label: string, value: number, step: number, set: (v: number) => void, key: string) => (
+    <label className="op-field" key={key}>
+      <span>{label}</span>
+      <input className="form-input" type="number" step={step} value={value} onChange={e => set(Number(e.target.value))} />
+    </label>
+  );
   return (
     <div className="op-settings">
       <div className="op-settings-col">
-        <div className="section-label">Cost rates ({String(s.currency)})</div>
-        {num("ratePerMin", "Per minute of lift")}
-        {num("ratePerKg", "Per kg lifted")}
-        {num("ratePerPenaltyPoint", "Per penalty point")}
-        <div className="section-label" style={{ marginTop: 8 }}>Scoring</div>
-        {num("safetyZeroAt", "Penalty points for 0 safety score")}
-        {num("snatchDaf", "Snatch above DAF", 0.05)}
+        <div className="dl-label">Scoring</div>
+        {field("Penalty points for a safety score of 0", s.safetyZeroAt as number, 1, v => setS({ ...s, safetyZeroAt: v }), "z")}
+        {field("Snatch above DAF", s.snatchDaf as number, 0.05, v => setS({ ...s, snatchDaf: v }), "d")}
+        {field("Boom-tip shock above (m/s²)", s.shockAccel as number, 0.1, v => setS({ ...s, shockAccel: v }), "a")}
       </div>
       <div className="op-settings-col">
-        <div className="section-label">Penalty points</div>
-        {Object.keys(pen).map(k => (
-          <label className="op-field" key={k}>
-            <span>{PEN_LABEL[k] ?? k}</span>
-            <input className="form-input" type="number" step={0.5} value={pen[k]}
-                   onChange={e => setS({ ...s, pen: { ...pen, [k]: Number(e.target.value) } })} />
-          </label>
-        ))}
+        <div className="dl-label">Penalty points</div>
+        {Object.keys(pen).map(k => field(PEN_LABEL[k] ?? k, pen[k], 0.5, v => setS({ ...s, pen: { ...pen, [k]: v } }), k))}
       </div>
       <div className="op-settings-actions">
         <button className="btn-primary" onClick={save}>Save settings</button>
@@ -87,6 +78,11 @@ function SettingsEditor({ onSaved }: { onSaved: () => void }) {
   );
 }
 
+/**
+ * Operator report, in three levels: the verdict (grade, three sub-scores, four
+ * key numbers), then ONE section at a time (safety / timeline / all lifts),
+ * so the screen never turns into a wall of text.
+ */
 export function OperatorTab({ selectedLift, onSelectLift, liftsVersion }: {
   selectedLift: string | null; onSelectLift: (id: string | null) => void; liftsVersion: number;
 }) {
@@ -94,6 +90,7 @@ export function OperatorTab({ selectedLift, onSelectLift, liftsVersion }: {
   const [report, setReport] = useState<LiftReport | null>(null);
   const [who, setWho] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [section, setSection] = useState<Section>("safety");
   const [busy, setBusy] = useState(false);
   const [bump, setBump] = useState(0);
 
@@ -110,7 +107,7 @@ export function OperatorTab({ selectedLift, onSelectLift, liftsVersion }: {
     const ls = lifts.filter(l => l.ok && l.operator === o && l.score !== null);
     const avg = (f: (l: LiftSummary) => number) => ls.length ? ls.reduce((a, l) => a + f(l), 0) / ls.length : 0;
     return { op: o, n: ls.length, avgScore: avg(l => l.score ?? 0), best: Math.max(0, ...ls.map(l => l.score ?? 0)),
-             avgCost: avg(l => l.cost ?? 0), avgDur: avg(l => l.durationS ?? 0) };
+             avgDur: avg(l => l.durationS ?? 0) };
   }).filter(r => r.n), [lifts, operators]);
 
   const rescore = async (all: boolean) => {
@@ -122,13 +119,14 @@ export function OperatorTab({ selectedLift, onSelectLift, liftsVersion }: {
   };
 
   const r = report?.ok ? report : null;
+  const overRated = r && r.load.ratedKg ? r.load.liftedKg > r.load.ratedKg : false;
 
   return (
     <div className="dl-page op-page">
       <div className="dl-topbar no-print">
         <label className="dl-filter">
           Lift
-          <select className="form-select dl-select wide" value={current ?? ""} onChange={e => onSelectLift(e.target.value || null)}>
+          <select className="dl-select wide" value={current ?? ""} onChange={e => onSelectLift(e.target.value || null)}>
             {lifts.length === 0 && <option value="">No lifts recorded</option>}
             {lifts.map(l => (
               <option key={l.id} value={l.id}>
@@ -138,13 +136,15 @@ export function OperatorTab({ selectedLift, onSelectLift, liftsVersion }: {
           </select>
         </label>
         <span className="dl-card-fill" />
-        <button className="dl-icon-btn" onClick={() => setShowSettings(v => !v)}><SlidersHorizontal size={11} /> Score &amp; cost settings</button>
+        <button className={`dl-icon-btn ${showSettings ? "on" : ""}`} onClick={() => setShowSettings(v => !v)}>
+          <SlidersHorizontal size={13} /> Scoring
+        </button>
         <button className="dl-icon-btn" disabled={busy || !current} onClick={() => rescore(false)} title="Re-run the analysis with the current settings">
-          <RefreshCcw size={11} /> Re-score
+          <RefreshCcw size={13} /> Re-score
         </button>
         <button className="dl-icon-btn" disabled={busy || !lifts.length} onClick={() => rescore(true)}>Re-score all</button>
-        <button className="dl-icon-btn" disabled={!r} onClick={() => window.print()} title="Print or save the report as PDF">
-          <Printer size={11} /> Print / PDF
+        <button className="dl-icon-btn" disabled={!r} onClick={() => window.print()} title="Print or save as PDF">
+          <Printer size={13} /> Print / PDF
         </button>
       </div>
 
@@ -156,138 +156,154 @@ export function OperatorTab({ selectedLift, onSelectLift, liftsVersion }: {
 
       {r && (
         <div className="op-report">
-          <div className="dl-card op-head">
-            <div className={`op-grade g${r.score.grade}`}>
-              <span className="op-grade-letter">{r.score.grade}</span>
-              <span className="op-grade-num">{r.score.total.toFixed(0)}</span>
-            </div>
-            <div className="op-head-text">
-              <div className="op-title">Operator report: {r.operator}</div>
-              <div className="dl-muted">
-                {new Date(r.startedAt).toLocaleString()} · {fmtS(r.durationS)} · lifted {(r.load.liftedKg * 1000).toFixed(0)} g
-                {r.load.ratedKg ? ` of ${(r.load.ratedKg * 1000).toFixed(0)} g rated` : ""} · {r.id}
+          {/* ---- level 1: the verdict ---- */}
+          <div className="dl-card op-hero">
+            <div className="op-verdict">
+              <div className={`op-grade g${r.score.grade}`}>
+                <span className="op-grade-letter">{r.score.grade}</span>
+                <span className="op-grade-num">{r.score.total.toFixed(0)} / 100</span>
               </div>
-              {r.note && <div className="dl-muted">{r.note}</div>}
+              <div className="op-who">
+                <span className="op-who-name">{r.operator}</span>
+                <span className="op-who-meta">{new Date(r.startedAt).toLocaleString()}</span>
+                <span className="op-who-meta">{fmtS(r.durationS)} · {r.id}</span>
+                {r.note && <span className="op-who-meta">“{r.note}”</span>}
+              </div>
             </div>
-            <div className="op-cost">
-              <span className="dl-stat-label">Lift cost</span>
-              <span className="op-cost-total">{money(r.cost.total, r.cost.currency)}</span>
-            </div>
-          </div>
 
-          <div className="op-cols">
-            <div className="dl-card">
-              <div className="dl-card-head"><span className="dl-card-title">Score</span></div>
+            <div className="op-bars">
               <ScoreBar label="Safety" value={r.score.safety} max={r.score.max.safety}
                         note={`${r.penalty.points.toFixed(1)} penalty points`} />
               <ScoreBar label="Smoothness" value={r.score.smoothness} max={r.score.max.smoothness}
-                        note={`DAF ${r.smoothness.dafMax.toFixed(2)} · ripple ${r.smoothness.meanRippleG.toFixed(1)} g · ${r.smoothness.reversalsPerMin} reversals/min`} />
+                        note={`peak DAF ${r.smoothness.dafMax.toFixed(2)} · ripple ${r.smoothness.meanRippleG.toFixed(1)} g · ${r.smoothness.reversalsPerMin} reversals/min`} />
               <ScoreBar label="Efficiency" value={r.score.efficiency} max={r.score.max.efficiency}
                         note={`${(r.efficiency.idleFrac * 100).toFixed(0)} % idle · ${r.smoothness.jogsPerMin} motion starts/min`} />
             </div>
 
-            <div className="dl-card">
-              <div className="dl-card-head"><span className="dl-card-title">Cost breakdown</span></div>
-              <table className="dl-table">
-                <tbody>
-                  <tr><td>Time</td><td>{(r.durationS / 60).toFixed(2)} min × {money(r.cost.rates.perMin, r.cost.currency)}</td><td>{money(r.cost.time, r.cost.currency)}</td></tr>
-                  <tr><td>Weight lifted</td><td>{r.load.liftedKg.toFixed(3)} kg × {money(r.cost.rates.perKg, r.cost.currency)}</td><td>{money(r.cost.load, r.cost.currency)}</td></tr>
-                  <tr><td>Safety penalty</td><td>{r.penalty.points.toFixed(1)} pts × {money(r.cost.rates.perPenaltyPoint, r.cost.currency)}</td><td>{money(r.cost.penalty, r.cost.currency)}</td></tr>
-                  <tr className="total"><td>Total</td><td /><td>{money(r.cost.total, r.cost.currency)}</td></tr>
-                </tbody>
-              </table>
-              <div className="dl-card-head" style={{ marginTop: 10 }}><span className="dl-card-title">Penalty points</span></div>
-              <table className="dl-table">
-                <tbody>
-                  {r.penalty.items.length === 0 && <tr><td className="dl-muted" colSpan={3}>None. Clean lift.</td></tr>}
-                  {r.penalty.items.map(i => (
-                    <tr key={i.what}><td>{i.what}</td><td>{i.value}</td><td>{i.points.toFixed(1)}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="dl-card">
-              <div className="dl-card-head"><span className="dl-card-title">Key numbers</span></div>
-              <div className="dl-now-grid">
-                <Metric label="Peak load %" value={r.load.peakPct !== null ? `${r.load.peakPct} %` : "—"} />
-                <Metric label="Mean load %" value={r.load.meanPct !== null ? `${r.load.meanPct} %` : "—"} />
-                <Metric label="Peak DAF" value={r.smoothness.dafMax.toFixed(2)} hint="Dynamic amplification at pick-up: peak / static load" />
-                <Metric label="Time in WARN" value={`${r.safety.warnS} s`} />
-                <Metric label="Time in CUT" value={`${r.safety.cutS} s`} />
-                <Metric label="Min tipping margin" value={r.safety.minTipMargin !== null ? `${r.safety.minTipMargin} %` : "—"} />
-                <Metric label="Swing-stop ripple" value={r.smoothness.swingStopRippleG !== null ? `${r.smoothness.swingStopRippleG} g` : "—"}
-                        hint="Load-cell ripple in the 2 s after the swing stops (sway proxy)" />
-                <Metric label="Refused motions" value={String(r.safety.refusals)} />
-                <Metric label="SLI mode" value={r.safety.modes.join(", ")} />
-              </div>
+            <div className="op-keys">
+              <Metric label="Lifted" value={`${(r.load.liftedKg * 1000).toFixed(0)} g`} level={overRated ? "crit" : ""}
+                      hint={r.load.ratedKg ? `Rated ${(r.load.ratedKg * 1000).toFixed(0)} g at that pose` : undefined} />
+              <Metric label="Rated" value={r.load.ratedKg ? `${(r.load.ratedKg * 1000).toFixed(0)} g` : "—"} />
+              <Metric label="Peak load %" value={r.load.peakPct !== null ? `${r.load.peakPct} %` : "—"}
+                      level={r.load.peakPct !== null && r.load.peakPct >= 100 ? "crit" : r.load.peakPct !== null && r.load.peakPct >= 90 ? "warn" : ""} />
+              <Metric label="SLI mode" value={r.safety.modes.join(", ")} level={r.safety.modes.some(m => m !== "ARMED") ? "warn" : ""} />
             </div>
           </div>
 
-          <div className="dl-card">
-            <div className="dl-card-head"><span className="dl-card-title">Lift phases</span></div>
-            <PhaseBar phases={r.phases} duration={r.durationS || 1} />
-            <div className="op-phase-totals">
-              {Object.entries(r.phaseTotals).map(([k, v]) => (
-                <span key={k}><b>{k}</b> {fmtS(v)} ({((v / (r.durationS || 1)) * 100).toFixed(0)} %)</span>
+          {/* ---- level 2: one section at a time ---- */}
+          <div className="dl-topbar no-print">
+            <div className="dl-seg" role="tablist" aria-label="Report section">
+              {SECTIONS.map(s => (
+                <button key={s.id} role="tab" aria-selected={section === s.id}
+                        className={section === s.id ? "on" : ""} onClick={() => setSection(s.id)}>{s.label}</button>
               ))}
             </div>
           </div>
 
-          <div className="dl-card">
-            <div className="dl-card-head"><span className="dl-card-title">Flagged moments</span></div>
-            {r.flags.length === 0 ? <div className="dl-muted">Nothing flagged.</div> : (
-              <ul className="op-flags">
-                {r.flags.map((f, i) => (
-                  <li key={i} className={f.level}>
-                    <span className="op-flag-tag">{f.level === "crit" ? "CRIT" : f.level === "warn" ? "WARN" : "INFO"}</span>
-                    <span className="op-flag-t">{fmtS(f.t)}</span>{f.text}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
-
-      {lifts.length > 0 && (
-        <div className="op-cols two no-print">
-          <div className="dl-card">
-            <div className="dl-card-head">
-              <span className="dl-card-title">All lifts</span>
-              <span className="dl-card-fill" />
-              <select className="form-select dl-select" value={who} onChange={e => setWho(e.target.value)}>
-                <option value="">All operators</option>
-                {operators.map(o => <option key={o} value={o}>{o}</option>)}
-              </select>
+          {section === "safety" && (
+            <div className="op-section two">
+              <div className="dl-card">
+                <div className="dl-card-head"><span className="dl-card-title">Where the safety points went</span></div>
+                <table className="dl-table">
+                  <thead><tr><th>Event</th><th className="num">Count / s</th><th className="num">Points</th></tr></thead>
+                  <tbody>
+                    {r.penalty.items.length === 0 && <tr><td colSpan={3}>None. Clean lift.</td></tr>}
+                    {r.penalty.items.map(i => (
+                      <tr key={i.what}><td>{i.what}</td><td className="num">{i.value}</td><td className="num">{i.points.toFixed(1)}</td></tr>
+                    ))}
+                    {r.penalty.items.length > 0 && (
+                      <tr className="total"><td>Total</td><td /><td className="num">{r.penalty.points.toFixed(1)}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="dl-card">
+                <div className="dl-card-head"><span className="dl-card-title">Safety numbers</span></div>
+                <div className="dl-now-grid">
+                  <Metric label="Time in WARN" value={`${r.safety.warnS} s`} level={r.safety.warnS > 0 ? "warn" : ""} />
+                  <Metric label="Time in CUT" value={`${r.safety.cutS} s`} level={r.safety.cutS > 0 ? "crit" : ""} />
+                  <Metric label="Refused motions" value={String(r.safety.refusals)} />
+                  <Metric label="Mean load %" value={r.load.meanPct !== null ? `${r.load.meanPct} %` : "—"} />
+                  <Metric label="Min tipping margin" value={r.safety.minTipMargin !== null ? `${r.safety.minTipMargin} %` : "—"} />
+                  <Metric label="E-stops" value={String(r.safety.estops)} />
+                  <Metric label="Peak DAF" value={r.smoothness.dafMax.toFixed(2)} hint="Dynamic amplification at pick-up: peak / static load" />
+                  <Metric label="Swing-stop ripple" value={r.smoothness.swingStopRippleG !== null ? `${r.smoothness.swingStopRippleG} g` : "—"}
+                          hint="Load-cell ripple in the 2 s after the swing stops (sway proxy)" />
+                  <Metric label="Boom-tip shocks" value={r.dynamics ? String(r.dynamics.shocks.length) : "—"}
+                          hint={r.dynamics?.peakAccel != null ? `Peak ${r.dynamics.peakAccel} m/s²` : "Recorded before acceleration logging"} />
+                </div>
+              </div>
             </div>
-            <table className="dl-table clickable">
-              <thead><tr><th>When</th><th>Operator</th><th>Load</th><th>Time</th><th>Score</th><th>Cost</th></tr></thead>
-              <tbody>
-                {shown.map(l => (
-                  <tr key={l.id} className={l.id === current ? "on" : ""} onClick={() => onSelectLift(l.id)}>
-                    <td>{liftLabel(l)}</td><td>{l.operator}</td>
-                    <td>{l.liftedKg ? `${(l.liftedKg * 1000).toFixed(0)} g` : "—"}</td>
-                    <td>{l.durationS !== null ? fmtS(l.durationS) : "—"}</td>
-                    <td>{l.score?.toFixed(0)} <span className={`dl-grade g${l.grade}`}>{l.grade}</span></td>
-                    <td>{l.cost !== null ? l.cost.toFixed(0) : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="dl-card">
-            <div className="dl-card-head"><span className="dl-card-title">Per operator</span></div>
-            <table className="dl-table">
-              <thead><tr><th>Operator</th><th>Lifts</th><th>Avg score</th><th>Best</th><th>Avg time</th><th>Avg cost</th></tr></thead>
-              <tbody>
-                {perOp.map(p => (
-                  <tr key={p.op}><td>{p.op}</td><td>{p.n}</td><td>{p.avgScore.toFixed(1)}</td><td>{p.best.toFixed(0)}</td>
-                    <td>{fmtS(p.avgDur)}</td><td>{p.avgCost.toFixed(0)}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          )}
+
+          {section === "timeline" && (
+            <div className="op-section">
+              <div className="dl-card">
+                <div className="dl-card-head"><span className="dl-card-title">Lift phases</span></div>
+                <PhaseBar phases={r.phases} duration={r.durationS || 1} />
+                <div className="op-phase-totals">
+                  {Object.entries(r.phaseTotals).map(([k, v]) => (
+                    <Metric key={k} label={k} value={`${fmtS(v)} · ${((v / (r.durationS || 1)) * 100).toFixed(0)} %`} />
+                  ))}
+                </div>
+              </div>
+              <div className="dl-card">
+                <div className="dl-card-head"><span className="dl-card-title">Flagged moments ({r.flags.length})</span></div>
+                {r.flags.length === 0 ? <div className="dl-muted">Nothing flagged.</div> : (
+                  <ul className="op-flags">
+                    {r.flags.map((f, i) => (
+                      <li key={i}>
+                        <span className={`state-chip ${f.level === "crit" ? "crit" : f.level === "warn" ? "warn" : "off"}`}>
+                          {f.level === "crit" ? "▲ CRIT" : f.level === "warn" ? "△ WARN" : "INFO"}
+                        </span>
+                        <span className="op-flag-t">{fmtS(f.t)}</span>
+                        <span>{f.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+
+          {section === "lifts" && (
+            <div className="op-section two">
+              <div className="dl-card">
+                <div className="dl-card-head">
+                  <span className="dl-card-title">All lifts</span>
+                  <select className="dl-select" value={who} onChange={e => setWho(e.target.value)}>
+                    <option value="">All operators</option>
+                    {operators.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+                <table className="dl-table clickable">
+                  <thead><tr><th>When</th><th>Operator</th><th className="num">Load</th><th className="num">Time</th><th className="num">Score</th></tr></thead>
+                  <tbody>
+                    {shown.map(l => (
+                      <tr key={l.id} className={l.id === current ? "on" : ""} onClick={() => onSelectLift(l.id)}>
+                        <td>{liftLabel(l)}</td><td>{l.operator}</td>
+                        <td className="num">{l.liftedKg ? `${(l.liftedKg * 1000).toFixed(0)} g` : "—"}</td>
+                        <td className="num">{l.durationS !== null ? fmtS(l.durationS) : "—"}</td>
+                        <td className="num">{l.score?.toFixed(0)} <span className={`dl-grade g${l.grade}`}>{l.grade}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="dl-card">
+                <div className="dl-card-head"><span className="dl-card-title">Per operator</span></div>
+                <table className="dl-table">
+                  <thead><tr><th>Operator</th><th className="num">Lifts</th><th className="num">Avg score</th><th className="num">Best</th><th className="num">Avg time</th></tr></thead>
+                  <tbody>
+                    {perOp.map(p => (
+                      <tr key={p.op}><td>{p.op}</td><td className="num">{p.n}</td><td className="num">{p.avgScore.toFixed(1)}</td>
+                        <td className="num">{p.best.toFixed(0)}</td><td className="num">{fmtS(p.avgDur)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

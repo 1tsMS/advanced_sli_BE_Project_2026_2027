@@ -38,9 +38,8 @@
 #define HX711_DT_PIN         16
 #define HX711_SCK_PIN        17
 // Default calibration factor (counts per kg) from software/test_codes/loadcell_approx/loadcell_approx.ino
+// (Plausible load ceiling: SLI_MAX_LOAD_KG in safety_logic.h)
 #define HX711_DEFAULT_SCALE  122000.0f
-// Plausible load ceiling for a 5kg model crane (beyond this = uncalibrated or overload error)
-#define MAX_VALID_LOAD_KG    10.0f
 
 // ======================== FSR ANALOG PINS ========================
 // ADC1 input-only pins — outrigger force sensors
@@ -49,7 +48,19 @@
 // FSR3 = rear left, FSR4 = rear right (dashboard order). On the new board the rear
 // pair is wired crossed, so RL is on GPIO39 and RR on GPIO36.
 #define FSR3_PIN  39
-#define FSR4_PIN  36  
+#define FSR4_PIN  36
+// Smoothing: FSR_OVERSAMPLE ADC reads averaged per channel every 10 ms, then an
+// exponential average with this time constant. The pads change slowly; raw
+// ESP32 ADC readings jump by +-30 counts sample to sample.
+#define FSR_OVERSAMPLE      4
+#define FSR_SMOOTH_TAU_S    0.3f
+
+// ======================== FAULT INJECTION INPUT (test E6) ========================
+// A switch that breaks a sensor line pulls this pin to GND on its second pole, so
+// the firmware logs the moment of the fault ($EV,<ms>,FI,1). GPIO0 = the BOOT
+// button pin: the dev board already pulls it up, and pressing BOOT tests the
+// logging. Open the switch before a reset (held low at reset = download mode).
+#define FAULT_INJECT_PIN    0
 
 // ======================== N20 WINCH VIA DRV8833 ========================
 #define DRV_AIN1  13   // PWM / direction
@@ -75,7 +86,10 @@
 // Confirmed from test_codes/esp_serial_test/esp_serial_test.ino
 #define MEGA_RX_PIN  23   // ESP32 GPIO23 (RX2) ← Mega Pin 18 (TX1)
 #define MEGA_TX_PIN  27   // ESP32 GPIO27 (TX2) → Mega Pin 19 (RX1)
-#define MEGA_BAUD    9600
+// 57600: a stop command ("M0 A2", 7 bytes) takes 1.2 ms on the wire instead of 7 ms
+// at 9600. (115200 has 2.1 % baud error on the 16 MHz Mega; 57600 has 0.8 %.)
+// Must match Serial1.begin() in mega_executor.ino.
+#define MEGA_BAUD    57600
 
 // ======================== USB SERIAL TO PC ========================
 #define USB_BAUD  115200
@@ -96,10 +110,11 @@
 // Rope geometry around the calibrated length. The rope calibration (CAL4 A4 / CAL6)
 // measures from the END OF THE LOAD CELL to the KNOT above the hook. Fixed parts
 // the encoder never sees (measured 2026-10-29):
-#define ROPE_FIXED_PATH_MM      245.0f   // 22.5 cm + 2 cm of rope before the load-cell end
-#define ROPE_KNOT_TO_HOOK_MM     90.0f   // knot to hook tip
-// -> ropeTotalMM = calibrated + 245 + 90      (all rope + hook)
-// -> hookDropMM  = calibrated + 90            (load-cell end to hook tip: the part that
+#define ROPE_FIXED_PATH_MM      288.0f   // bearing centre to the load-cell edge, telescope retracted
+                                         // (new boom head, MS 2026-11-09; was 245 with the old head)
+#define ROPE_KNOT_TO_HOOK_MM     76.0f   // knot to the hook curve (MS 2026-11-09; was 90)
+// -> ropeTotalMM = calibrated + 288 + 76      (all rope + hook)
+// -> hookDropMM  = calibrated + 76            (load-cell end to hook tip: the part that
 //                                              hangs and swings, i.e. the pendulum length)
 #define ROPE_DRUM_DIAMETER_MM   20.0f
 #define ROPE_MM_PER_COUNT_DEFAULT  ((PI * ROPE_DRUM_DIAMETER_MM) / N20_COUNTS_PER_REV)
@@ -123,9 +138,6 @@
 // 1 = use the boom encoder once it has been referenced with CAL4 A2.
 #define BOOM_ANGLE_FROM_ENCODER 0
 
-// Crane physical geometry
-#define BASE_BOOM_LENGTH_MM     225.0f   // 22.5 cm physical base boom
-
 
 // ======================== SHARED DATA STRUCTURES ========================
 
@@ -135,10 +147,9 @@
  * All access MUST be guarded by sensorMutex.
  */
 struct SensorData {
-    // Angle values (degrees, 0.0–360.0)
+    // Angles (degrees)
     float boomAngle;
     float swingAngle;
-    float teleAngle;         // raw AS5600 angle for telescope
 
     // Computed linear values
     float extensionMM;       // telescope linear extension
@@ -150,15 +161,19 @@ struct SensorData {
     float loadCellRaw;       // kg — HX711 reading (tare + scale), NOT angle-compensated
     float actualLoadKg;      // kg — boom-angle-compensated (Phase 3: same as loadCellRaw for now)
 
-    // IMU orientation (complementary-filtered, zeroed by CAL1)
+    // IMU orientation (imu_filter.h, zeroed by CAL1)
     float imuRoll;           // degrees — boom angle as seen by the IMU (cross-check for the encoder)
     float imuPitch;          // degrees — sideways lean of the boom
+    // Boom-tip motion, PEAK since the last $T (SerialTxTask resets them after sending)
+    float accelDynPk;        // m/s^2 beyond gravity
+    float jerkPk;            // m/s^3
+    uint32_t imuRejected;    // corrupted IMU samples skipped since boot (EMI indicator)
 
-    // Outrigger force sensors (raw ADC 0–4095)
+    // Outrigger force sensors (ADC counts 0-4095 = 0-3.3 V, smoothed: see FSR_SMOOTH_TAU_S)
     uint16_t fsr[4];
 
-    // Safety status (Phase 3 defaults)
-    float safeLoadLimit;     // kg — from load chart (default 5.0)
+    // Safety status, written by SafetyTask
+    float safeLoadLimit;     // kg — rated capacity at this pose (0 = outside the chart)
     float loadPercent;       // (actualLoad / safeLimit) × 100
     uint8_t alarmLevel;      // 0=OK, 1=WARN, 2=CRITICAL, 3=ESTOP
 
@@ -195,7 +210,8 @@ enum CalCommand : uint8_t {
     CAL_ENC_INVERT  = 5,  // CAL5 A<axis> I<0|1>:  flip an encoder axis direction
     CAL_ROPE_SCALE  = 6,  // CAL6 S<mm per count>: rope (winch) scale
     CAL_LOAD        = 7,  // CAL7 W<kg> record a weight / CAL7 CLEAR / CAL7 S<counts per kg>
-    CAL_AXIS_SCALE  = 8   // CAL8 A<1-3> S<units per encoder rev> [I<0|1>]: swing / boom / telescope ratio
+    CAL_AXIS_SCALE  = 8,  // CAL8 A<1-3> S<units per encoder rev> [I<0|1>]: swing / boom / telescope ratio
+    CAL_LOAD_ANGLE  = 9   // CAL9 W<kg> capture at this boom angle / CAL9 P<deg> / CAL9 OFF / CAL9 CLEAR (load_angle.h)
 };
 
 // Highest speed accepted in an M-command (steps/s, steppers). The winch runs at WINCH_PWM.
@@ -212,10 +228,6 @@ enum CalCommand : uint8_t {
 #define SHAPER_L_MIN_MM       50.0f
 #define SHAPER_L_MAX_MM     1500.0f
 #define SHAPER_RESEND_MS    2000UL   // repeat I1 so a Mega that reset gets it back
-
-// Load % thresholds (match the dashboard: amber at 80 %, red at 100 %)
-#define ALARM_WARN_PERCENT      80.0f
-#define ALARM_CRITICAL_PERCENT  100.0f
 
 // ======================== GLOBAL RTOS HANDLES ========================
 // Declared here, defined in esp32_main.ino

@@ -44,6 +44,7 @@ void persist_setImu(const PersistImu& imu);
 void persist_setRotary(uint8_t idx, const PersistRotary& r, bool boomCalibrated);   // idx 0 swing, 1 boom
 void persist_setTareOffset(int32_t offset);
 void persist_setLoadScale(float countsPerKg);
+void persist_setLoadAngle(float phiDeg, bool enabled);      // sli_hx / ang_phi, ang_on
 void persist_setAxisScale(uint8_t idx, float unitsPerRev);   // idx 0 swing, 1 boom
 void persist_setLoadChart(const LoadChart& chart);           // sli_lc / chart (blob)
 

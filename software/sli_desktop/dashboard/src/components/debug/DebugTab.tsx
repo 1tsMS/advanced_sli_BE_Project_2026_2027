@@ -1,13 +1,14 @@
-import { useState, useEffect, useRef } from "react";
-import { RefreshCw } from "lucide-react";
+import { useState, useEffect } from "react";
+import { RefreshCw, ChevronUp, ChevronDown } from "lucide-react";
 import type { TelemetryFrame, DebugReport } from "../../types";
 import { EncoderPanel } from "./EncoderPanel";
 import { RulerCal } from "./RulerCal";
 import { LoadCal } from "./LoadCal";
-import { TELE_RULER, ROPE_RULER, SWING_RULER } from "./rulerAxes";
+import { CalSection, CalSteps, type CalStatus } from "./CalSection";
+import { TELE_RULER, ROPE_RULER, SWING_RULER, type RulerAxisConfig } from "./rulerAxes";
 import { isEncoderDetailLine } from "./encoderDiag";
-
-const API_BASE = "http://localhost:8000/api";
+import { LOAD_CELL_FAULTS, loadCellVerdict } from "./loadCellHealth";
+import { API_BASE } from "../../api";
 
 interface DebugTabProps {
   debugReport: DebugReport | null;
@@ -15,78 +16,73 @@ interface DebugTabProps {
   frame?: TelemetryFrame | null;
 }
 
-// ---- Human-readable device names + GPIO info ----
-const DEVICE_INFO: Record<string, { name: string; gpio: string }> = {
-  "I2C0_SWING":   { name: "AS5600 Swing Encoder",    gpio: "SDA=32 SCL=33" },
-  "I2C1_BOOM":    { name: "AS5600 Boom Encoder",     gpio: "SDA=25 SCL=26" },
-  "I2C2_TELE":    { name: "AS5600 Telescope Enc.",   gpio: "SDA=15 SCL=5" },
-  "MPU6050":      { name: "MPU6050 (IMU)",           gpio: "SDA=21 SCL=22" },
-  "HX711":        { name: "HX711 (Load Cell)",       gpio: "DT=17 SCK=16"  },
-  "HX711_RAW":    { name: "HX711 raw counts",        gpio: "DT=17 SCK=16"  },
-  "FSR1":         { name: "FSR Front-Left",          gpio: "ADC=34" },
-  "FSR2":         { name: "FSR Front-Right",         gpio: "ADC=35" },
-  "FSR3":         { name: "FSR Rear-Left",           gpio: "ADC=36" },
-  "FSR4":         { name: "FSR Rear-Right",          gpio: "ADC=39" },
-  "N20_TICKS":    { name: "N20 Winch Ticks",         gpio: "A=18 B=19" },
-  "SENSOR_LOOP":  { name: "Sensor loop timing",      gpio: "core 1" },
-  "LOOP_STAGES":  { name: "Slowest loop stage (ms)", gpio: "core 1" },
-  "IMU_DROPOUTS": { name: "IMU dropouts / bad samples", gpio: "SDA=21 SCL=22" },
-  "STACKS":       { name: "Task stack free (bytes)",  gpio: "RTOS" },
-  "SERIAL_TX":    { name: "Serial lines dropped",     gpio: "RTOS" },
-  "NVS":          { name: "Flash writes",             gpio: "RTOS" },
-  "RESET":        { name: "Last reset / free heap",   gpio: "RTOS" },
-  "LOAD_CAL":     { name: "Load cell scale",          gpio: "DT=17 SCK=16" },
+// ---- Human-readable device names + where they are wired ----
+const DEVICE_INFO: Record<string, { name: string; where: string }> = {
+  "I2C0_SWING":   { name: "Swing encoder (AS5600)",  where: "SDA 32 · SCL 33" },
+  "I2C1_BOOM":    { name: "Boom encoder (AS5600)",   where: "SDA 25 · SCL 26" },
+  "I2C2_TELE":    { name: "Telescope encoder",       where: "SDA 15 · SCL 5" },
+  "MPU6050":      { name: "IMU (MPU6050)",           where: "SDA 21 · SCL 22" },
+  "HX711":        { name: "Load cell (HX711)",       where: "DT 16 · SCK 17" },
+  "HX711_RAW":    { name: "Load cell raw counts",    where: "DT 16 · SCK 17" },
+  "LOAD_CAL":     { name: "Load cell scale",         where: "flash" },
+  "LOAD_CELL":    { name: "Load cell bridge (wires)", where: "behind the HX711" },
+  "FSR1":         { name: "Pad front left",          where: "ADC 34" },
+  "FSR2":         { name: "Pad front right",         where: "ADC 35" },
+  "FSR3":         { name: "Pad rear left",           where: "ADC 39" },
+  "FSR4":         { name: "Pad rear right",          where: "ADC 36" },
+  "N20_TICKS":    { name: "Winch encoder ticks",     where: "A 18 · B 19" },
+  "SENSOR_LOOP":  { name: "Sensor loop timing",      where: "core 1" },
+  "LOOP_STAGES":  { name: "Slowest loop stage",      where: "core 1" },
+  "IMU_DROPOUTS": { name: "IMU dropouts / bad samples", where: "bus 0" },
+  "STACKS":       { name: "Task stack free (bytes)", where: "RTOS" },
+  "SERIAL_TX":    { name: "Serial lines dropped",    where: "RTOS" },
+  "NVS":          { name: "Flash writes",            where: "RTOS" },
+  "RESET":        { name: "Last reset / free heap",  where: "RTOS" },
 };
+const BAD = ["FAIL", "ERR", "NOT FOUND", "SLOW", "NOISY", "LOW", "DROPS", ...Object.keys(LOAD_CELL_FAULTS)];
 
-const friendlyName = (bus: string) => DEVICE_INFO[bus]?.name ?? bus;
-const gpioNote = (bus: string) => DEVICE_INFO[bus]?.gpio ?? "—";
-
-// IMU zero (CAL1). The firmware supports X (roll) and Y (pitch) as sources.
 type AxisChoice = "X" | "Y";
-const CAL_ITEMS = [
-  { key: "imu",  label: "Zero IMU / Gyro", sub: "Hold the boom still at its zero pose. Pick which IMU axis gives each angle.", path: "/calibrate/imu", hasAxis: true },
-];
+interface ImuChoice { boomAxis: AxisChoice; tiltAxis: AxisChoice; boomInv: boolean; tiltInv: boolean; last: string; }
+const IMU_KEY = "sli_imu_cal_choice";
+const IMU_DEFAULT: ImuChoice = { boomAxis: "X", tiltAxis: "Y", boomInv: false, tiltInv: false, last: "" };
+const OPEN_KEY = "sli_cal_open";
 
-interface CalState { status: string; boomAxis: AxisChoice; swingAxis: AxisChoice; boomInv: boolean; swingInv: boolean; }
-
-const CAL_STORAGE_KEY = "sli_debug_cal_state_v3";
-
-const DEFAULT_CAL_STATE: Record<string, CalState> = {
-  imu: { status: "", boomAxis: "X", swingAxis: "Y", boomInv: false, swingInv: false },
-};
-
-function loadSavedCalState(): Record<string, CalState> {
-  try {
-    const raw = localStorage.getItem(CAL_STORAGE_KEY);
-    if (raw) return { ...DEFAULT_CAL_STATE, ...JSON.parse(raw) };
-  } catch { /* storage blocked: use defaults */ }
-  return DEFAULT_CAL_STATE;
+function loadJson<T>(key: string, fallback: T): T {
+  try { const v = localStorage.getItem(key); if (v) return { ...fallback, ...JSON.parse(v) }; } catch { /* blocked */ }
+  return fallback;
 }
 
 async function apiPost(path: string, body: object = {}) {
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const data = await res.json();
-    return { ok: res.ok, msg: data.message ?? data.detail ?? (res.ok ? "Done ✓" : "Failed") };
+    return { ok: res.ok, msg: data.message ?? data.detail ?? (res.ok ? "Done" : "Failed") };
   } catch {
     return { ok: false, msg: "Backend offline" };
   }
 }
 
+/** Status of a ruler-calibrated axis from its AXIS_<tag> line. */
+function axisStatus(report: DebugReport | null, cfg: RulerAxisConfig): CalStatus {
+  const line = report?.entries.find(e => e.bus === `AXIS_${cfg.diagTag}`);
+  if (!line) return { text: "Scan", level: "off" };
+  const scale = /scale:([-\d.]+)/.exec(line.address ?? "")?.[1];
+  const isDefault = scale !== undefined && Math.abs(parseFloat(scale) - cfg.defaultScale) < 1e-6;
+  return isDefault ? { text: "Default", level: "warn" } : { text: "Stored", level: "ok" };
+}
+
 export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
   const [scanning, setScanning] = useState(false);
   const [logs, setLogs] = useState<{ text: string; type: "ack" | "info" | "err" }[]>([]);
-  const [calState, setCalState] = useState<Record<string, CalState>>(loadSavedCalState);
-  const termRef = useRef<HTMLDivElement>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const [imu, setImu] = useState<ImuChoice>(() => loadJson(IMU_KEY, IMU_DEFAULT));
+  const [open, setOpen] = useState<string>(() => { try { return localStorage.getItem(OPEN_KEY) ?? "load"; } catch { return "load"; } });
 
-  // Read diagnostics + stored calibration as soon as the tab opens (no state set here)
+  // Read diagnostics + stored calibration as soon as the tab opens
   useEffect(() => { apiPost("/debug/scan"); }, []);
 
-  // Collect ACKs into the log
   useEffect(() => {
     if (!lastAck) return;
     setLogs(prev => [{ text: lastAck, type: "ack" as const }, ...prev].slice(0, 200));
@@ -104,176 +100,152 @@ export function DebugTab({ debugReport, lastAck, frame }: DebugTabProps) {
     setTimeout(() => setScanning(false), 1500);
   };
 
-  const runCal = async (item: typeof CAL_ITEMS[0]) => {
-    const s = calState[item.key] ?? DEFAULT_CAL_STATE[item.key];
-    const body = item.hasAxis ? {
-      boomAxis:   s?.boomAxis  ?? "X",
-      tiltAxis:   s?.swingAxis ?? "Y",
-      boomInvert: s?.boomInv  ?? false,
-      tiltInvert: s?.swingInv ?? false,
-    } : {};
+  const toggle = (key: string) => {
+    const next = open === key ? "" : key;      // one section open at a time
+    setOpen(next);
+    try { localStorage.setItem(OPEN_KEY, next); } catch { /* not remembered */ }
+  };
 
-    addLog(`→ ${item.label} (${item.path})`, "info");
-    const result = await apiPost(item.path, body);
-    addLog(`← ${result.msg}`, result.ok ? "ack" : "err");
-    setCalState(prev => {
-      const updated = {
-        ...prev,
-        [item.key]: { ...(prev[item.key] ?? DEFAULT_CAL_STATE[item.key]), status: result.msg },
-      };
-      try { localStorage.setItem(CAL_STORAGE_KEY, JSON.stringify(updated)); } catch { /* ignore */ }
-      return updated;
+  const setImuField = <K extends keyof ImuChoice>(k: K, v: ImuChoice[K]) => {
+    setImu(prev => {
+      const next = { ...prev, [k]: v };
+      try { localStorage.setItem(IMU_KEY, JSON.stringify(next)); } catch { /* not remembered */ }
+      return next;
     });
   };
 
-  const setCalAxis = (key: string, field: keyof CalState, val: string | boolean) => {
-    setCalState(prev => {
-      const cur = prev[key] ?? DEFAULT_CAL_STATE[key];
-      const updated = { ...prev, [key]: { ...cur, [field]: val } };
-      try { localStorage.setItem(CAL_STORAGE_KEY, JSON.stringify(updated)); } catch { /* ignore */ }
-      return updated;
+  const zeroImu = async () => {
+    addLog("→ Zero IMU (CAL1)", "info");
+    const r = await apiPost("/calibrate/imu", {
+      boomAxis: imu.boomAxis, tiltAxis: imu.tiltAxis, boomInvert: imu.boomInv, tiltInvert: imu.tiltInv,
     });
+    addLog(`← ${r.msg}`, r.ok ? "ack" : "err");
+    setImuField("last", r.ok ? new Date().toLocaleString() : "");
   };
 
-  const tableEntries = debugReport?.entries.filter(e => !isEncoderDetailLine(e.bus)) ?? [];
+  const health = debugReport?.entries.filter(e => !isEncoderDetailLine(e.bus)) ?? [];
+  const loadCal = debugReport?.entries.find(e => e.bus === "LOAD_CAL");
+  const cellVerdict = loadCellVerdict(debugReport);
+  const loadStatus: CalStatus = cellVerdict && LOAD_CELL_FAULTS[cellVerdict] ? { text: "Cell fault", level: "warn" }
+    : !loadCal ? { text: "Scan", level: "off" }
+    : loadCal.status === "OK" ? { text: "Calibrated", level: "ok" } : { text: "Default scale", level: "warn" };
+  const imuStatus: CalStatus = imu.last ? { text: "Zeroed", level: "ok" } : { text: "Run at start", level: "warn" };
+  const problems = health.filter(e => BAD.includes(e.status)).length;
+
+  const imuAxisPicker = (axisK: "boomAxis" | "tiltAxis", invK: "boomInv" | "tiltInv", label: string) => (
+    <div className="imu-pick">
+      <span className="imu-pick-k">{label}</span>
+      <div className="seg">
+        {(["X", "Y"] as AxisChoice[]).map(a => (
+          <button key={a} className={imu[axisK] === a ? "on" : ""} onClick={() => setImuField(axisK, a)}>{a}</button>
+        ))}
+      </div>
+      <label className="check"><input type="checkbox" checked={imu[invK]} onChange={e => setImuField(invK, e.target.checked)} /> Invert</label>
+    </div>
+  );
 
   return (
     <div className="debug-page">
       <div className="debug-main">
-
-        {/* Left column: hardware status + encoders */}
+        {/* ---------- left: what the ESP32 reports ---------- */}
         <div className="debug-col">
-          <div className="debug-card debug-card-status">
-            <div className="debug-card-header">
-              <span className="debug-card-title">Hardware Status</span>
-              <button
-                className="btn-ghost"
-                onClick={scan}
-                disabled={scanning}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 8px", fontSize: 10 }}
-              >
-                <RefreshCw size={10} style={{ animation: scanning ? "spin 1s linear infinite" : "none" }} />
-                {scanning ? "Scanning..." : "Scan"}
-              </button>
+          <div className="panel debug-health">
+            <div className="panel-header">
+              System health
+              <span className="ph-right">
+                {debugReport && (
+                  <span className={`state-chip ${problems ? "warn" : "ok"}`}>
+                    {problems ? `△ ${problems} to check` : "All OK"}
+                  </span>
+                )}
+                <button className="btn-ghost btn-sm" onClick={scan} disabled={scanning}>
+                  <RefreshCw size={14} className={scanning ? "spin" : ""} /> {scanning ? "Scanning" : "Scan"}
+                </button>
+              </span>
             </div>
-            <div className="debug-card-body">
-              {tableEntries.length > 0 ? (
-                <table className="scan-table">
-                  <thead>
-                    <tr>
-                      <th>Device</th>
-                      <th>GPIO</th>
-                      <th>Detail</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
+            <div className="panel-body">
+              {health.length > 0 ? (
+                <table className="health-table">
                   <tbody>
-                    {tableEntries.map((e, i) => {
-                      const isFail = ["FAIL", "ERR", "NOT FOUND", "SLOW", "NOISY", "LOW", "DROPS", "DEFAULT"].includes(e.status);
-                      const isNumeric = e.status !== "—" && e.status !== "" && !isNaN(Number(e.status));
-                      const isOk = e.status === "OK" || (!isFail && isNumeric);
+                    {health.map((e, i) => {
+                      const bad = BAD.includes(e.status);
+                      const isNum = e.status !== "" && !isNaN(Number(e.status));
                       return (
                         <tr key={i}>
-                          <td>{friendlyName(e.bus)}</td>
-                          <td className="dim-text">{gpioNote(e.bus)}</td>
-                          <td className="dim-text">{e.address ?? "—"}</td>
-                          <td className={isOk ? "ok-text" : isFail ? "fail-text" : "dim-text"}>{e.status}</td>
+                          <td>
+                            <div className="h-name">{DEVICE_INFO[e.bus]?.name ?? e.bus}</div>
+                            <div className="h-where">{DEVICE_INFO[e.bus]?.where ?? ""}{e.address ? ` · ${e.address}` : ""}</div>
+                          </td>
+                          <td className="h-status">
+                            {isNum ? <span className="h-num">{e.status}</span>
+                              : <span className={`state-chip ${bad ? "warn" : e.status === "OK" ? "ok" : "off"}`}>{bad ? "△ " : ""}{e.status}</span>}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              ) : (
-                <div style={{ fontSize: 11, color: "var(--text-muted)", paddingTop: 4 }}>
-                  Click "Scan" to request hardware status from ESP32.
-                </div>
-              )}
+              ) : <div className="empty-note">Press Scan to read the sensor status from the ESP32.</div>}
             </div>
           </div>
 
           <EncoderPanel frame={frame} debugReport={debugReport} onScan={scan} onLog={addLog} />
         </div>
 
-        {/* Right column: calibration */}
-        <div className="debug-card">
-          <div className="debug-card-header">
-            <span className="debug-card-title">Sensor Calibration & Motor Tuning</span>
+        {/* ---------- right: calibration, in the order to do it ---------- */}
+        <div className="panel debug-cal">
+          <div className="panel-header">
+            Calibration
+            <span className="ph-right"><span className="ph-hint">in this order · each step saves to the ESP32</span></span>
           </div>
-          <div className="debug-card-body">
-            <div className="cal-list">
+          <div className="panel-body cal-list">
+            <CalSection n={1} title="Load cell" summary="Tare + 2-3 known weights" status={loadStatus}
+                        open={open === "load"} onToggle={() => toggle("load")}>
               <LoadCal frame={frame} debugReport={debugReport} lastAck={lastAck} onScan={scan} onLog={addLog} />
-              {CAL_ITEMS.map(item => (
-                <div className="cal-item" key={item.key}>
-                  <div className="cal-item-top">
-                    <div>
-                      <div className="cal-item-name">{item.label}</div>
-                      <div className="cal-item-sub">{item.sub}</div>
-                    </div>
-                    <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 10 }} onClick={() => runCal(item)}>
-                      Run
-                    </button>
-                  </div>
+            </CalSection>
 
-                  {item.hasAxis && (
-                    <div style={{ marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
-                      {([
-                        ["boomAxis", "boomInv", "Boom angle (IMU cross-check)"],
-                        ["swingAxis", "swingInv", "Boom lean"],
-                      ] as const).map(([axisField, invField, label]) => (
-                        <div key={axisField}>
-                          <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 3 }}>{label}</div>
-                          <div className="cal-axis-row">
-                            {(["X", "Y"] as AxisChoice[]).map(a => (
-                              <button
-                                key={a}
-                                className={`axis-badge ${(calState[item.key]?.[axisField] ?? "X") === a ? "sel" : ""}`}
-                                onClick={() => setCalAxis(item.key, axisField, a)}
-                              >
-                                {a}
-                              </button>
-                            ))}
-                            <button
-                              className={`axis-badge ${(calState[item.key]?.[invField] ?? false) ? "sel" : ""}`}
-                              onClick={() => setCalAxis(item.key, invField, !(calState[item.key]?.[invField] ?? false))}
-                              style={{ marginLeft: 4 }}
-                            >
-                              INV
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {calState[item.key]?.status && (
-                    <div className="cal-item-status" style={{ marginTop: 4 }}>← {calState[item.key].status}</div>
-                  )}
+            <CalSection n={2} title="IMU zero" summary="Boom still at its zero pose" status={imuStatus}
+                        open={open === "imu"} onToggle={() => toggle("imu")}>
+              <div className="cal-body">
+                <CalSteps
+                  steps={["Lower the boom to its zero pose and keep the crane still.",
+                          "Pick which IMU axis gives the boom angle and the lean.",
+                          "Zero IMU: the gyro and accelerometer are averaged for ~1 s."]}
+                  action={<button className="btn-primary" onClick={zeroImu}>Zero IMU</button>}
+                />
+                <div className="imu-picks">
+                  {imuAxisPicker("boomAxis", "boomInv", "Boom angle axis")}
+                  {imuAxisPicker("tiltAxis", "tiltInv", "Boom lean axis")}
                 </div>
-              ))}
+                {imu.last && <div className="cal-note">Last zeroed {imu.last}</div>}
+              </div>
+            </CalSection>
 
-              <RulerCal cfg={SWING_RULER} frame={frame} debugReport={debugReport} onScan={scan} onLog={addLog} />
-              <RulerCal cfg={TELE_RULER} frame={frame} debugReport={debugReport} onScan={scan} onLog={addLog} />
-              <RulerCal cfg={ROPE_RULER} frame={frame} debugReport={debugReport} onScan={scan} onLog={addLog} />
-            </div>
+            {[TELE_RULER, SWING_RULER, ROPE_RULER].map((cfg, i) => (
+              <CalSection key={cfg.key} n={3 + i} title={cfg.title} summary={cfg.summary}
+                          status={axisStatus(debugReport, cfg)} open={open === cfg.key} onToggle={() => toggle(cfg.key)}>
+                <RulerCal cfg={cfg} frame={frame} debugReport={debugReport} onScan={scan} onLog={addLog} />
+              </CalSection>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Terminal log bar at bottom */}
-      <div className="terminal-bar">
-        <div className="terminal-header">
-          <div className="terminal-dot" />
-          ACK / Command Log
-        </div>
-        <div className="terminal-body" ref={termRef}>
-          {logs.length === 0 && <div className="terminal-line dim-text">Waiting for commands...</div>}
-          {logs.map((l, i) => (
-            <div key={i} className={`terminal-line ${l.type}`}>{l.text}</div>
-          ))}
-        </div>
+      {/* ---------- command log: a drawer, closed by default ---------- */}
+      <div className={`log-drawer ${logOpen ? "open" : ""}`}>
+        <button className="log-drawer-head" onClick={() => setLogOpen(o => !o)} aria-expanded={logOpen}>
+          {logOpen ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+          <span className="log-drawer-title">Command log</span>
+          {!logOpen && <span className={`log-last ${logs[0]?.type ?? ""}`}>{logs[0]?.text ?? "No commands yet"}</span>}
+          <span className="log-count">{logs.length}</span>
+        </button>
+        {logOpen && (
+          <div className="log-body">
+            {logs.length === 0 && <div className="log-line">No commands yet.</div>}
+            {logs.map((l, i) => <div key={i} className={`log-line ${l.type}`}>{l.text}</div>)}
+          </div>
+        )}
       </div>
-
-      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
     </div>
   );
 }

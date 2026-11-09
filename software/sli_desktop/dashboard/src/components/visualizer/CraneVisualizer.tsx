@@ -1,6 +1,28 @@
 import { useRef, useEffect, useState } from "react";
 import type { TelemetryFrame } from "../../types";
 import { loadStatus } from "../telemetry/loadStatus";
+import { useTheme } from "../../theme";
+import { BOOM_BASE_MM, BOOM_HEAD_MM, hookArmMm } from "../../geometry";
+
+/** "#RRGGBB" + alpha -> rgba() (canvas needs real colours, not CSS variables). */
+function alpha(hex: string, a: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+/** Theme tokens read at draw time (index.css). */
+function palette() {
+  const css = getComputedStyle(document.documentElement);
+  const t = (n: string) => css.getPropertyValue(n).trim();
+  return {
+    bg: t("--surface"), s2: t("--surface-2"), s3: t("--surface-3"),
+    grid: t("--chart-grid"), line: t("--line"), lineStrong: t("--line-strong"),
+    text: t("--text"), text2: t("--text-2"), text3: t("--text-3"),
+    warn: t("--warn"), crit: t("--crit"),
+  };
+}
 
 interface CraneVisualizerProps {
   frame: TelemetryFrame | null;
@@ -25,6 +47,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [dimensions, setDimensions] = useState({ width: 480, height: 320 });
+  const theme = useTheme();
 
   // Dynamically observe container dimensions
   useEffect(() => {
@@ -76,12 +99,10 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const actualLoad = frame?.actualLoad ?? 0;
     const safeLimit = frame?.safeLoadLimit ?? 5.0;
 
-    // --- Palette ---
-    const colorSafe = "#00D68F";
-    const colorWarn = "#F5A623";
-    const colorDanger = "#FF3B3B";
-    const statusColor = alarmLevel >= 2 ? colorDanger : alarmLevel === 1 ? colorWarn : colorSafe;
-    const cyanAccent = "#22C4DE";
+    // --- Palette: neutral structure; only WARN / CUT colour the boom (ISA-101) ---
+    const P = palette();
+    const statusColor = alarmLevel >= 2 ? P.crit : alarmLevel === 1 ? P.warn : P.text2;
+    const cyanAccent = P.text2;
 
     // --- Layout Geometry ---
     // Pivot positioned at right-center so boom elevates and reaches toward the left
@@ -90,7 +111,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const groundY = pivY + 20;
 
     // Physical dimensions & coordinate scaling
-    const BASE_BOOM_MM = 225.0; // 22.5 cm physical constant base boom
+    const BASE_BOOM_MM = BOOM_BASE_MM;   // drawing scale: the fixed boom tube (geometry.ts)
     const maxAllowedBoom = Math.min(pivX - 32, pivY - 26);
 
     // Constant Base Boom = 22.5 cm (occupies ~64% of available boom space)
@@ -114,11 +135,11 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const boomEndY = pivY - Math.sin(angleRad) * currentBoomLen;
 
     // Clear background
-    ctx.fillStyle = "#070809";
+    ctx.fillStyle = P.bg;
     ctx.fillRect(0, 0, W, H);
 
     // --- Engineering CAD Grid ---
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.035)";
+    ctx.strokeStyle = P.grid;
     ctx.lineWidth = 1;
     const gridSize = 28;
     for (let x = 0; x <= W; x += gridSize) {
@@ -135,7 +156,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     }
 
     // --- Ground Line & Bed ---
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+    ctx.strokeStyle = P.lineStrong;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(15, groundY);
@@ -143,7 +164,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Ground hatch marks
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
+    ctx.strokeStyle = P.grid;
     ctx.lineWidth = 1;
     for (let hx = 20; hx < W - 20; hx += 16) {
       ctx.beginPath();
@@ -173,12 +194,12 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.restore();
 
     // --- Radius Dimension Line ---
-    const currentTotalM = (BASE_BOOM_MM + extClampedMM) / 1000;
+    const currentTotalM = hookArmMm(extClampedMM) / 1000;   // radius to the hook, as in the telemetry panel
     const radMeters = (currentTotalM * Math.cos(angleRad)).toFixed(2);
     const radiusPx = pivX - boomEndX;
     if (radiusPx > 30) {
       ctx.save();
-      ctx.strokeStyle = "rgba(34, 196, 222, 0.4)";
+      ctx.strokeStyle = alpha(P.text2, 0.5);
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 3]);
 
@@ -196,7 +217,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
       // Horizontal dimension line with arrows
       ctx.setLineDash([]);
-      ctx.strokeStyle = "rgba(34, 196, 222, 0.7)";
+      ctx.strokeStyle = alpha(P.text2, 0.85);
       const dimY = groundY + 14;
       ctx.beginPath();
       ctx.moveTo(boomEndX + 4, dimY);
@@ -205,7 +226,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
       // Radius text badge
       ctx.fillStyle = cyanAccent;
-      ctx.font = "600 10px JetBrains Mono, monospace";
+      ctx.font = "600 12px JetBrains Mono, monospace";
       ctx.textAlign = "center";
       ctx.fillText(`R: ${radMeters}m`, (boomEndX + pivX) / 2, dimY - 4);
       ctx.restore();
@@ -213,8 +234,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
     // --- Crane Pedestal & Machinery House ---
     // Outrigger/chassis beam
-    ctx.fillStyle = "#141824";
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+    ctx.fillStyle = P.s2;
+    ctx.strokeStyle = P.line;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.roundRect(pivX - 48, groundY - 11, 96, 11, [2, 2, 0, 0]);
@@ -222,8 +243,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Counterweight block (rear, to the right)
-    ctx.fillStyle = "#1E2433";
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+    ctx.fillStyle = P.s3;
+    ctx.strokeStyle = P.lineStrong;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(pivX + 8, pivY - 14, 38, 25, 3);
@@ -231,7 +252,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Hazard stripes on counterweight
-    ctx.strokeStyle = "rgba(245, 166, 35, 0.4)";
+    ctx.strokeStyle = alpha(P.text3, 0.6);
     ctx.lineWidth = 2;
     for (let cs = pivX + 14; cs < pivX + 42; cs += 8) {
       ctx.beginPath();
@@ -241,8 +262,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     }
 
     // Turntable Slewing Pedestal
-    ctx.fillStyle = "#191E2B";
-    ctx.strokeStyle = "rgba(34, 196, 222, 0.35)";
+    ctx.fillStyle = P.s2;
+    ctx.strokeStyle = alpha(P.text3, 0.7);
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(pivX - 25, groundY - 11);
@@ -271,7 +292,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const barrelEndY = cylAnchorY + cylDy * barrelRatio;
 
     // Chrome rod
-    ctx.strokeStyle = "#C4CCD9";
+    ctx.strokeStyle = P.text2;
     ctx.lineWidth = 5;
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -280,7 +301,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Outer barrel
-    ctx.strokeStyle = "#1C2333";
+    ctx.strokeStyle = P.lineStrong;
     ctx.lineWidth = 10;
     ctx.lineCap = "butt";
     ctx.beginPath();
@@ -288,7 +309,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.lineTo(barrelEndX, barrelEndY);
     ctx.stroke();
 
-    ctx.strokeStyle = "rgba(34, 196, 222, 0.5)";
+    ctx.strokeStyle = alpha(P.text2, 0.6);
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -309,7 +330,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
     ctx.save();
     // Inner boom metallic body (precision chrome / alloy)
-    ctx.strokeStyle = "rgba(225, 238, 255, 0.95)";
+    ctx.strokeStyle = P.text;
     ctx.lineWidth = innerWidth;
     ctx.lineCap = "square";
     ctx.beginPath();
@@ -318,7 +339,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Subtle metallic chrome core
-    ctx.strokeStyle = "#FFFFFF";
+    ctx.strokeStyle = P.text;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(
@@ -333,7 +354,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
     // Millimeter graduation markings along the exposed extending section
     if (extPx > 6) {
-      ctx.strokeStyle = "rgba(15, 23, 42, 0.65)";
+      ctx.strokeStyle = alpha(P.bg, 0.65);
       ctx.lineWidth = 1;
       const exposedDist = currentBoomLen - baseBoomLen;
       const tickSpacingPx = Math.max(7, pxPerMM * 10);
@@ -355,7 +376,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
         const calloutX = pivX - Math.cos(angleRad) * calloutD + Math.cos(perp) * 16;
         const calloutY = pivY - Math.sin(angleRad) * calloutD - Math.sin(perp) * 16;
 
-        ctx.fillStyle = "rgba(10, 18, 30, 0.88)";
+        ctx.fillStyle = alpha(P.bg, 0.9);
         ctx.strokeStyle = cyanAccent;
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -364,7 +385,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
         ctx.stroke();
 
         ctx.fillStyle = cyanAccent;
-        ctx.font = "bold 9px JetBrains Mono, monospace";
+        ctx.font = "bold 11px JetBrains Mono, monospace";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(`+${extClampedMM.toFixed(0)}mm`, calloutX, calloutY);
@@ -376,7 +397,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.save();
     // Base boom shadow / glow
     ctx.shadowColor = statusColor;
-    ctx.shadowBlur = alarmLevel >= 1 ? 14 : 7;
+    ctx.shadowBlur = 0;
     ctx.strokeStyle = statusColor;
     ctx.lineWidth = boomWidth;
     ctx.lineCap = "round";
@@ -387,7 +408,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.restore();
 
     // Solid inner core of outer boom
-    ctx.strokeStyle = "#161B26";
+    ctx.strokeStyle = P.line;
     ctx.lineWidth = boomWidth - 4;
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -397,8 +418,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
 
     // Stencil label on the fixed base boom: "22.5cm"
     ctx.save();
-    ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
-    ctx.font = "bold 9px JetBrains Mono, monospace";
+    ctx.fillStyle = P.text3;
+    ctx.font = "bold 11px JetBrains Mono, monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const midBaseX = pivX - Math.cos(angleRad) * (baseBoomLen * 0.62);
@@ -418,7 +439,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.lineTo(baseEndX, baseEndY);
     ctx.stroke();
 
-    ctx.strokeStyle = "#FFFFFF";
+    ctx.strokeStyle = P.text;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(baseEndX, baseEndY);
@@ -432,7 +453,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.arc(boomEndX, boomEndY, 7.5, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "#070809";
+    ctx.fillStyle = P.bg;
     ctx.beginPath();
     ctx.arc(boomEndX, boomEndY, 3, 0, Math.PI * 2);
     ctx.fill();
@@ -445,7 +466,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const hookY = boomEndY + ropePx;
 
     // Wire rope
-    ctx.strokeStyle = "rgba(220, 230, 245, 0.75)";
+    ctx.strokeStyle = P.text2;
     ctx.lineWidth = 1.8;
     ctx.beginPath();
     ctx.moveTo(boomEndX, boomEndY + 4);
@@ -453,8 +474,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Hook Block & Pulley
-    ctx.fillStyle = "#2A3142";
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+    ctx.fillStyle = P.s3;
+    ctx.strokeStyle = P.lineStrong;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(hookX - 6, hookY, 12, 12, 2.5);
@@ -462,7 +483,7 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     ctx.stroke();
 
     // Hook loop & tip
-    ctx.strokeStyle = "#F5A623";
+    ctx.strokeStyle = P.text;
     ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.arc(hookX, hookY + 16, 6, 0, Math.PI * 1.5);
@@ -472,19 +493,19 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const ls = loadStatus(frame);
     const isLoadError = ls !== "ok";
     if (ls === "loadErr") {
-      ctx.fillStyle = "#FFB300";
-      ctx.font = "bold 10px JetBrains Mono, monospace";
+      ctx.fillStyle = P.warn;
+      ctx.font = "bold 13px JetBrains Mono, monospace";
       ctx.textAlign = "left";
       ctx.fillText("LOAD ERR (>10kg)", hookX + 10, hookY + 12);
     } else if (actualLoad > 0.05) {   // also when outside the chart: the load itself is fine
-      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      ctx.font = "bold 10px JetBrains Mono, monospace";
+      ctx.fillStyle = P.text;
+      ctx.font = "bold 13px JetBrains Mono, monospace";
       ctx.textAlign = "left";
       ctx.fillText(`${actualLoad.toFixed(2)} kg`, hookX + 10, hookY + 12);
     }
 
     // --- Main Turntable Pivot Pin ---
-    ctx.fillStyle = "#1E2638";
+    ctx.fillStyle = P.s3;
     ctx.strokeStyle = cyanAccent;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
@@ -511,16 +532,16 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     const badgeX = pivX + Math.cos(midAngle) * (arcRadius + 20);
     const badgeY = pivY + Math.sin(midAngle) * (arcRadius + 20);
 
-    ctx.fillStyle = "rgba(10, 15, 25, 0.85)";
-    ctx.strokeStyle = "rgba(34, 196, 222, 0.4)";
+    ctx.fillStyle = alpha(P.bg, 0.9);
+    ctx.strokeStyle = alpha(P.text2, 0.5);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(badgeX - 25, badgeY - 10, 50, 20, 4);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = "#FFFFFF";
-    ctx.font = "bold 12px JetBrains Mono, monospace";
+    ctx.fillStyle = P.text;
+    ctx.font = "bold 13px JetBrains Mono, monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(`${boomAngle.toFixed(1)}°`, badgeX, badgeY);
@@ -529,8 +550,8 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
     // --- Top Overlay Info Badges ---
     ctx.save();
     const loadPct = isLoadError ? 0 : (safeLimit > 0 ? (actualLoad / safeLimit) * 100 : 0);
-    ctx.font = "600 11px Inter, sans-serif";
-    ctx.fillStyle = isLoadError ? "#FFB300" : statusColor;
+    ctx.font = "600 13px Inter, sans-serif";
+    ctx.fillStyle = isLoadError ? P.warn : statusColor;
     ctx.textAlign = "left";
     ctx.fillText(
       ls === "outside" ? "● OUTSIDE LOAD CHART (capacity 0)"
@@ -538,17 +559,16 @@ export function CraneVisualizer({ frame }: CraneVisualizerProps) {
       16, 24
     );
 
-    ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
-    ctx.font = "600 10px JetBrains Mono, monospace";
-    const totalBoomCM = (22.5 + (extClampedMM / 10)).toFixed(1);
+    ctx.fillStyle = P.text2;
+    ctx.font = "600 12px JetBrains Mono, monospace";
     ctx.fillText(
-      `BOOM: 22.5cm ${extClampedMM > 0.5 ? `(+${extClampedMM.toFixed(0)}mm) = ${totalBoomCM}cm` : "(Retracted)"}`,
+      `Pivot to hook ${Math.round(hookArmMm(extClampedMM))} mm = ${BOOM_BASE_MM + BOOM_HEAD_MM} to load-cell edge + ${extClampedMM.toFixed(0)} telescope`,
       16, 40
     );
     ctx.restore();
 
     ctx.restore();
-  }, [dimensions, frame]);
+  }, [dimensions, frame, theme]);
 
   // Both the box and the canvas are absolutely positioned: the canvas's pixel size
   // must never feed back into the size the ResizeObserver measures (in normal flow

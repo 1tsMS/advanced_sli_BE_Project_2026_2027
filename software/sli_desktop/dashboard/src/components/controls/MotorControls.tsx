@@ -2,10 +2,10 @@ import { useState } from "react";
 import { Square, Gamepad2 } from "lucide-react";
 import { useHoldToMove, type MotionAxis } from "../../hooks/useHoldToMove";
 import { useGamepad } from "../../hooks/useGamepad";
-import { isBlocked, liveSafety, useNow, type ReceivedSafety } from "../sli/sliStatus";
+import { isBlocked, liveSafety, useNow, useSteadyMask, type ReceivedSafety } from "../sli/sliStatus";
 import type { ShapingState } from "../../types";
+import { API_BASE } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 
 // D0 button on the left, D1 on the right. Winch firmware: D0 = wind up, D1 = pay out.
 const AXES: { id: MotionAxis; name: string; d0Label: string; d1Label: string; d0Title: string; d1Title: string }[] = [
@@ -40,7 +40,7 @@ function ShapingToggle({ shaping }: { shaping: ShapingState | null }) {
             title={on
               ? `Swing input shaping ON: every swing start/stop is split in two halves ${shaping!.halfPeriodMs} ms apart (pendulum ${shaping!.lengthMm.toFixed(0)} mm). E-stop and SLI cuts stay instant.`
               : "Swing input shaping OFF. Click to cancel load sway on swing starts and stops (needs the latest ESP32 + Mega firmware)."}>
-      Swing shaping {on ? `ON · T/2 ${shaping!.halfPeriodMs} ms` : "OFF"}
+      Shaping {on ? `ON · ${shaping!.halfPeriodMs} ms` : "OFF"}
     </button>
   );
 }
@@ -54,7 +54,9 @@ export function MotorControls({ speed, onSpeedChange, safety, shaping }: MotorCo
   const motion = useHoldToMove();
   const sli = liveSafety(safety, useNow());
   // Shown before pressing; the ESP32 still decides (and the alert bar explains a refusal)
-  const cut = (axis: number, dir: 0 | 1) => isBlocked(sli, axis, dir);
+  // Steady view of the mask: no red/normal flicker when a reading sits on a chart edge
+  const steady = useSteadyMask(sli?.blocked ?? 0);
+  const cut = (axis: number, dir: 0 | 1) => isBlocked(sli ? { ...sli, blocked: steady } : null, axis, dir);
   const { connected: gpConnected } = useGamepad(motion, speed);
   const [pressed, setPressed] = useState<string | null>(null);   // "axis-dir" of the held button
 
@@ -85,10 +87,16 @@ export function MotorControls({ speed, onSpeedChange, safety, shaping }: MotorCo
   });
 
   return (
-    <div className="panel" style={{ height: "100%" }}>
+    <div className="panel" style={{ flexShrink: 0 }}>
       <div className="panel-header">
-        <span className="ph-icon">⊕</span>
-        Motor Controls
+        Motor controls
+        <span className="ph-right">
+          <ShapingToggle shaping={shaping} />
+          <span className={`gp-badge ${gpConnected ? "live" : ""}`}
+                title="Left stick: swing / boom · Right stick: telescope · RT/LT: winch · B: E-stop">
+            <Gamepad2 size={13} /> {gpConnected ? "Controller" : "No controller"}
+          </span>
+        </span>
       </div>
 
       <div className="axes-grid">
@@ -115,7 +123,7 @@ export function MotorControls({ speed, onSpeedChange, safety, shaping }: MotorCo
         ))}
       </div>
 
-      <div className="controls-footer" style={{ flexWrap: "wrap", gap: 6 }}>
+      <div className="controls-footer">
         <span className="speed-label">
           Speed: <span className="speed-val">{speed}</span>
         </span>
@@ -130,14 +138,6 @@ export function MotorControls({ speed, onSpeedChange, safety, shaping }: MotorCo
         </button>
       </div>
 
-      <div style={{ padding: "0 8px 8px", display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <ShapingToggle shaping={shaping} />
-        <div className={`gp-badge ${gpConnected ? "live" : ""}`}
-             title="Left stick: swing / boom · Right stick: telescope · RT/LT: winch · B: E-stop">
-          <Gamepad2 size={12} />
-          {gpConnected ? "Controller active" : "No controller"}
-        </div>
-      </div>
     </div>
   );
 }

@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Scale, Plus, Trash2, Save } from "lucide-react";
+import { Plus, Trash2, Save } from "lucide-react";
 import type { DebugReport, TelemetryFrame } from "../../types";
+import { API_BASE, sendCommand } from "../../api";
+import { CalSteps } from "./CalSection";
+import { LOAD_CELL_FAULTS, loadCellVerdict } from "./loadCellHealth";
 
-const API_BASE = "http://localhost:8000/api";
 
 interface LoadCalProps {
   frame: TelemetryFrame | null | undefined;
@@ -47,6 +49,7 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
   const [weightKg, setWeightKg] = useState("");
   const [manualScale, setManualScale] = useState("");
   const [busy, setBusy] = useState(false);
+  const [angErr, setAngErr] = useState<string | null>(null);   // shown in the card: the command log is elsewhere
 
   const line = debugReport?.entries.find(e => e.bus === "LOAD_CAL");
   const cal = kv(line?.address);
@@ -59,6 +62,26 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
   const measuring = !!ack && ack.includes("MEASURING");
 
   const live = frame?.measuredLoad ?? 0;
+  const corrected = frame?.actualLoad ?? 0;
+  const boom = frame?.boomAngle ?? 0;
+
+  // Boom-angle correction (CAL9): same known mass captured at 2+ boom angles
+  const angAck = lastAck && lastAck.startsWith("$ACK,CAL9") ? lastAck : null;
+  const angKv = kv(angAck);
+  const angMeasuring = !!angAck && angAck.includes("MEASURING");
+  const sendAng = async (cmd: string, what: string) => {
+    setBusy(true);
+    onLog(`→ ${what}`, "info");
+    const r = await sendCommand(cmd);
+    onLog(`← ${r.message ?? (r.ok ? "Sent" : "Failed")}`, r.ok ? "ack" : "err");
+    setAngErr(r.ok ? null : `Not sent: ${r.message ?? "backend refused"} (restart the backend?)`);
+    setBusy(false);
+  };
+  const captureAngle = () => {
+    const w = parseFloat(weightKg);
+    if (!Number.isFinite(w) || w <= 0 || w > 10) { setAngErr("Type the weight in kg in the Known weight box first"); return; }
+    sendAng(`CAL9 W${w.toFixed(4)}`, `Capture ${w} kg at boom ${boom.toFixed(1)}° (hold still ~2 s)`);
+  };
 
   const send = async (body: object, what: string) => {
     setBusy(true);
@@ -88,40 +111,43 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
   };
 
   return (
-    <div className="cal-item" style={{ border: "1px solid var(--border-accent)" }}>
-      <div className="cal-item-top">
-        <div>
-          <div className="cal-item-name" style={{ color: "var(--cyan)", display: "flex", alignItems: "center", gap: 6 }}>
-            <Scale size={13} />
-            Load Cell (2–3 known weights)
+    <div className="cal-body">
+      {(() => {
+        const v = loadCellVerdict(debugReport);
+        const f = v ? LOAD_CELL_FAULTS[v] : undefined;
+        return f ? (
+          <div className="cal-fault" role="alert">
+            <b>▲ {f.title}</b>
+            <span>{f.check}</span>
+            <span className="cal-fault-note">The SLI treats the load as unknown (FAULT) until this clears. Press Scan to re-check.</span>
           </div>
-          <div className="cal-item-sub">
-            1. Empty hook → Tare. 2. Hang a weighed object, enter its kg → Record (hold still ~2 s).
-            3. Repeat with 1–2 heavier weights. Each Record refits and saves the scale.
-          </div>
-        </div>
-        <button className="btn-primary" style={{ padding: "4px 10px", fontSize: 10 }} onClick={tare}
-                title="Zero the load cell with nothing hanging on the hook">
-          Tare
-        </button>
-      </div>
+        ) : null;
+      })()}
+      <CalSteps
+        steps={[
+          "Empty hook, then Tare.",
+          "Hang a weighed object, enter its kg, Record weight (hold still ~2 s).",
+          "Repeat with 1-2 heavier weights. Each Record refits and saves the scale.",
+        ]}
+        action={<button className="btn-primary" onClick={tare} title="Zero the load cell with nothing hanging on the hook">Tare</button>}
+      />
 
       <div className="tele-cal-box">
         <div className="tele-readout-strip">
           <div>
             <div className="tele-k">Live load</div>
-            <div className="tele-val-lg" style={{ color: "var(--cyan)" }}>
-              {live.toFixed(3)} <span style={{ fontSize: 12, fontWeight: 500 }}>kg</span>
+            <div className="tele-val-lg" style={{ color: "var(--text)" }}>
+              {live.toFixed(3)} <span style={{ fontSize: "var(--fs-md)", fontWeight: 500 }}>kg</span>
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
             <div className="tele-k">Scale on the ESP32</div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 11,
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-sm)",
                           color: espScale === null ? "var(--amber)" : isDefault ? "var(--amber)" : "var(--text-secondary)" }}>
               {espScale === null ? "not loaded: Scan" : `${espScale.toFixed(1)} counts/kg${isDefault ? " (default guess)" : ""}`}
             </div>
             {cal.points && cal.points !== "0" && (
-              <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{cal.points} weight(s) this session</div>
+              <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-muted)" }}>{cal.points} weight(s) this session</div>
             )}
           </div>
         </div>
@@ -129,7 +155,7 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
         <div className="tele-section-card">
           <div className="tele-section-title">
             <span>Known weight</span>
-            <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: 9 }} disabled={busy}
+            <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: "var(--fs-xs)" }} disabled={busy}
                     onClick={() => send({ action: "clear" }, "Clear recorded weights")}>
               <Trash2 size={9} /> Clear points
             </button>
@@ -139,7 +165,7 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
                    aria-label="Known weight in kg"
                    onChange={e => setWeightKg(e.target.value)}
                    onKeyDown={e => { if (e.key === "Enter") record(); }} />
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>kg</span>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>kg</span>
             <button className="btn-primary" onClick={record} disabled={busy || measuring}
                     style={{ marginLeft: "auto", padding: "5px 12px" }}>
               <Plus size={10} /> {measuring ? "Measuring…" : "Record weight"}
@@ -155,12 +181,45 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
         </div>
 
         <div className="tele-section-card">
+          <div className="tele-section-title">
+            <span>Boom-angle correction</span>
+            <button className="btn-ghost" style={{ padding: "1px 6px", fontSize: "var(--fs-xs)" }} disabled={busy}
+                    onClick={() => sendAng("CAL9 CLEAR", "Clear angle points")}>
+              <Trash2 size={9} /> Clear points
+            </button>
+          </div>
+          <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-muted)" }}>
+            Same weight as above. Capture at a low boom angle, then again 15°+ higher. Boom now {boom.toFixed(1)}° · corrected load {corrected.toFixed(3)} kg
+          </div>
+          <div className="tele-input-row">
+            <button className="btn-primary" onClick={captureAngle} disabled={busy || angMeasuring || measuring}
+                    style={{ padding: "5px 12px" }}>
+              <Plus size={10} /> {angMeasuring ? "Measuring…" : "Capture at this angle"}
+            </button>
+            <button className="btn-ghost" onClick={() => sendAng("CAL9 OFF", "Turn angle correction off")} disabled={busy}
+                    style={{ marginLeft: "auto", padding: "5px 12px" }}>
+              Off
+            </button>
+          </div>
+          {angErr && (
+            <div className="cal-item-status" style={{ color: "var(--amber)" }}>{angErr}</div>
+          )}
+          {angAck && (
+            <div className="cal-item-status" style={{ color: angAck.includes(",ERR") ? "var(--amber)" : "var(--cyan)" }}>
+              {angAck.includes(",OK,")
+                ? `phi ${angKv.PHI}° · ${angKv.SCALE} counts/kg from ${angKv.N} angle(s) · worst error ${angKv.WORST_ERR_G} g`
+                : angAck.replace("$ACK,CAL9,", "")}
+            </div>
+          )}
+        </div>
+
+        <div className="tele-section-card">
           <div className="tele-section-title"><span>Manual scale</span></div>
           <div className="tele-input-row">
             <input type="number" step="any" className="tele-input" value={manualScale}
                    placeholder={espScale !== null ? espScale.toFixed(1) : "counts/kg"}
                    onChange={e => setManualScale(e.target.value)} />
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>counts/kg</span>
+            <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>counts/kg</span>
             <button className="btn-ghost" onClick={saveManual} disabled={busy}
                     style={{ marginLeft: "auto", padding: "5px 12px" }}>
               <Save size={10} /> Save

@@ -14,9 +14,5 @@
     "estop": 3.0,
     "sliNotArmed": 10.0
   },
-  "safetyZeroAt": 50.0,
-  "currency": "INR",
-  "ratePerMin": 85.0,
-  "ratePerKg": 100.0,
-  "ratePerPenaltyPoint": 5.0
+  "safetyZeroAt": 50.0
 }

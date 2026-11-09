@@ -63,16 +63,12 @@ def test_snatch_is_flagged_and_costs_points():
     assert any("Snatch" in f["text"] for f in jerk["flags"])
 
 
-def test_warn_penalty_and_cost_formula():
+def test_warn_penalty():
     a = analyse(make_lift(warn=True))
     assert a["safety"]["warnEntries"] == 1 and a["safety"]["warnS"] == pytest.approx(1.0, abs=0.05)
     cfg = AnalysisSettings()
     pts = a["penalty"]["points"]
     assert pts == pytest.approx(cfg.pen["warnEvent"] + cfg.pen["warnPerS"] * 1.0, abs=0.1)
-    c = a["cost"]
-    assert c["time"] == pytest.approx(a["durationS"] / 60 * cfg.ratePerMin, abs=0.01)
-    assert c["load"] == pytest.approx(0.8 * cfg.ratePerKg, abs=1)
-    assert c["total"] == pytest.approx(c["time"] + c["load"] + c["penalty"], abs=0.01)
 
 
 def test_ripple_after_stop():
@@ -176,9 +172,9 @@ def test_recorder_roundtrip(tmp_path):
     assert len(lifts) == 1 and lifts[0]["id"] == report["id"]
     rows = rec.rows(report["id"])
     assert len(rows) == 400 and rows[-1]["load"] == 0.5
-    rec.save_settings({"ratePerMin": 10, "pen": {"refusal": 50}})
+    rec.save_settings({"safetyZeroAt": 80, "pen": {"refusal": 50}})
     again = rec.reanalyse(report["id"])
-    assert again["cost"]["rates"]["perMin"] == 10
+    assert again["settings"]["safetyZeroAt"] == 80
     assert any(i["what"] == "Motions refused by SLI" and i["points"] == 50 for i in again["penalty"]["items"])
     assert rec.report("../../etc") is None
     assert rec.delete(report["id"]) and rec.list_lifts() == []

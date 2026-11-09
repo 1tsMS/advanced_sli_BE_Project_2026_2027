@@ -3,14 +3,15 @@ LiftRecorder — one lift = Start Lift ... Stop Lift on the dashboard.
 
 While a lift runs, every telemetry frame becomes a row of
 logs/lift_<YYYYmmdd_HHMMSS>.csv, enriched with what the backend knows and the
-ESP32 frame doesn't carry: the latest SLI status ($S), the motion each axis is
-being commanded (from the commands the backend itself sent), swing shaping
-on/off and the tipping margin. SLI acks (cut / refused) and E-stops are kept
-as events. On stop the lift is analysed (lift_analysis.py) and the result is
+ESP32 frame doesn't carry: the latest SLI status ($S, incl. cut mode and driver
+idle release), the motion each axis is being commanded (from the commands the
+backend itself sent), swing shaping on/off and the tipping margin. SLI acks
+(cut / refused), E-stops and the ESP32's timestamped $EV lines (fault switch,
+SLI state changes, cuts: firmware ms, for latency measurements) are kept as events. On stop the lift is analysed (lift_analysis.py) and the result is
 saved next to the CSV as lift_<...>.json.
 
 Also owns operators.json (operator dropdown) and lift_settings.json (score
-weights + cost rates) in the profiles folder.
+weights) in the profiles folder.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ LIFT_HEADER = [
     "boom", "ext", "swing", "rope", "hookDrop", "imuTilt",
     "fsr1", "fsr2", "fsr3", "fsr4", "tipValid", "tipMargin", "copX", "copY",
     "m1", "m2", "m3", "m4", "shaping",
+    "accelDyn", "jerk", "imuRejected", "cutMode", "drvIdle", "loadRaw",
 ]
 _MOTOR = re.compile(r"^M([1-4])\s+S(\d+)\s+D([01])$")
 _STOP = re.compile(r"^M0\s+A([1-4])")
@@ -156,13 +158,19 @@ class LiftRecorder:
     def on_safety(self, status: SafetyStatus) -> None:
         self.safety = status
 
+    def on_event(self, ev: dict) -> None:
+        """$EV line: {"fwMs", "kind", "detail"}. Kept with both clocks."""
+        if self.active:
+            self._events.append({"t": round(time.time() - self._t0, 3), "kind": "ev",
+                                 "ev": ev["kind"], "fwMs": ev["fwMs"], "text": ev["detail"]})
+
     def on_frame(self, frame: TelemetryFrame, tip: dict) -> None:
         if not self.active:
             return
         m = self.motion.state(frame.timestamp)
         row = {
             "t": round(frame.timestamp - self._t0, 3), "timestamp": frame.timestamp,
-            "load": round(frame.actualLoad, 4), "pct": round(frame.loadPercent, 1),
+            "load": round(frame.actualLoad, 4), "loadRaw": round(frame.measuredLoad, 4), "pct": round(frame.loadPercent, 1),
             "capKg": round(frame.safeLoadLimit, 3), "state": self.safety.state, "mode": self.safety.mode,
             "blocked": self.safety.blocked,
             "boom": round(frame.boomAngle, 2), "ext": round(frame.extensionMM, 1),
@@ -174,6 +182,9 @@ class LiftRecorder:
             "copX": tip.get("copX") if tip.get("valid") else "",
             "copY": tip.get("copY") if tip.get("valid") else "",
             "m1": m[1], "m2": m[2], "m3": m[3], "m4": m[4], "shaping": int(self.shaping),
+            "accelDyn": round(frame.accelDyn, 3), "jerk": round(frame.jerk, 1),
+            "imuRejected": frame.imuRejected, "cutMode": self.safety.cutMode,
+            "drvIdle": "" if self.safety.drvIdle is None else int(self.safety.drvIdle),
         }
         self._rows.append(row)
         try:
@@ -211,7 +222,7 @@ class LiftRecorder:
         if self._file:
             self._file.close()
         self._file, self._writer = None, None
-        meta = {"id": lift_id, "operator": self._operator, "note": self._note,
+        meta = {"id": lift_id, "name": "", "operator": self._operator, "note": self._note,
                 "startedAt": datetime.fromtimestamp(self._t0).isoformat(timespec="seconds"),
                 "tipWarnPct": self.tip_warn_pct}
         rows = [{**r, "tipMargin": float(r["tipMargin"]) if r["tipValid"] else 0.0} for r in self._rows]
@@ -242,11 +253,12 @@ class LiftRecorder:
                 r = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            out.append({"id": r.get("id", f.stem), "operator": r.get("operator"), "note": r.get("note", ""),
+            out.append({"id": r.get("id", f.stem), "name": r.get("name", ""),
+                        "operator": r.get("operator"), "note": r.get("note", ""),
                         "startedAt": r.get("startedAt"), "durationS": r.get("durationS"),
                         "liftedKg": (r.get("load") or {}).get("liftedKg"),
                         "score": (r.get("score") or {}).get("total"), "grade": (r.get("score") or {}).get("grade"),
-                        "cost": (r.get("cost") or {}).get("total"), "ok": r.get("ok", False)})
+                        "ok": r.get("ok", False)})
         return out
 
     def report(self, lift_id: str) -> Optional[dict]:
@@ -262,7 +274,7 @@ class LiftRecorder:
             for r in csv.DictReader(f):
                 row = {}
                 for k, v in r.items():
-                    if k in ("state", "mode"):
+                    if k in ("state", "mode", "cutMode"):
                         row[k] = v
                     else:
                         try:
@@ -279,13 +291,26 @@ class LiftRecorder:
         old, rows = self.report(lift_id), self.rows(lift_id)
         if old is None or rows is None:
             return None
-        meta = {k: old.get(k) for k in ("id", "operator", "note", "startedAt", "tipWarnPct")}
+        meta = {k: old.get(k) for k in ("id", "name", "operator", "note", "startedAt", "tipWarnPct")}
         clean = [{**r, "load": r["load"] or 0.0, "pct": r["pct"] or 0.0, "capKg": r["capKg"] or 0.0,
                   "tipValid": int(r.get("tipValid") or 0), "tipMargin": r.get("tipMargin") or 0.0} for r in rows]
         report = lift_analysis.analyse(clean, old.get("events", []), self.settings(), meta)
         report["events"] = old.get("events", [])
         (self._log_dir / f"{lift_id}.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
         return report
+
+    def rename(self, lift_id: str, name: Optional[str], note: Optional[str]) -> Optional[dict]:
+        """Set the lift's display name and/or note in its JSON report (the files keep their id)."""
+        p = self._path(lift_id, "json")
+        if not p:
+            return None
+        report = json.loads(p.read_text(encoding="utf-8"))
+        if name is not None:
+            report["name"] = name.strip()[:80]
+        if note is not None:
+            report["note"] = note.strip()[:200]
+        p.write_text(json.dumps(report, indent=1), encoding="utf-8")
+        return {"id": lift_id, "name": report.get("name", ""), "note": report.get("note", "")}
 
     def delete(self, lift_id: str) -> bool:
         found = False

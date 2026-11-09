@@ -1,5 +1,5 @@
 """
-Recording toggle, link-drop handling, encoder calibration commands.
+Link handling, log download guard, encoder calibration commands.
 
 Run from software/sli_desktop/backend:
     pip install pytest httpx
@@ -16,7 +16,6 @@ from sli_backend.api import rest_endpoints
 from sli_backend.api.models import TelemetryFrame
 from sli_backend.core.command_router import CommandRouter
 from sli_backend.core.serial_manager import SerialManager
-from sli_backend.core.session_logger import SessionLogger
 
 
 class FakeSerial:
@@ -51,76 +50,28 @@ class FakeSerial:
 @pytest.fixture
 def api(tmp_path):
     fake = FakeSerial()
-    log = SessionLogger(log_dir=tmp_path)
-    rest_endpoints.init_endpoints(fake, CommandRouter(fake), log)
+    rest_endpoints.init_endpoints(fake, CommandRouter(fake), tmp_path)
     app = FastAPI()
     app.include_router(rest_endpoints.router)
-    return TestClient(app), fake, log, tmp_path
+    return TestClient(app), fake, tmp_path
 
 
-# ---------------------------------------------------------------- SessionLogger
-
-def test_logger_is_off_by_default_and_writes_nothing(tmp_path):
-    log = SessionLogger(log_dir=tmp_path)
-    log.log_frame(TelemetryFrame(timestamp=1.0))
-    assert not log.is_active
-    assert list(tmp_path.iterdir()) == []
-    assert log.state() == {"recording": False, "file": None, "rows": 0, "elapsedSec": 0.0}
-
-
-def test_logger_start_write_stop(tmp_path):
-    log = SessionLogger(log_dir=tmp_path)
-    path = log.start_session()
-    assert log.start_session() == path            # second start keeps the same file
-    for i in range(3):
-        log.log_frame(TelemetryFrame(timestamp=1000.0 + i, boomAngle=float(i)))
-    assert log.state()["rows"] == 3
-    assert log.end_session() == path
-    assert log.end_session() is None              # already stopped
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
-    assert lines[0].startswith("timestamp,datetime,boomAngle")
-    assert len(lines) == 4
-
+# ---------------------------------------------------------------- log download
 
 def test_log_download_cannot_escape_folder(tmp_path):
     (tmp_path / "logs").mkdir()
     (tmp_path / "secret.txt").write_text("x")
-    log = SessionLogger(log_dir=tmp_path / "logs")
-    assert log.resolve_log("../secret.txt") is None
-    assert log.resolve_log("nope.csv") is None
-    (tmp_path / "logs" / "sli_session_1.csv").write_text("a")
-    assert log.resolve_log("sli_session_1.csv") is not None
+    logs = tmp_path / "logs"
+    assert rest_endpoints.resolve_log(logs, "../secret.txt") is None
+    assert rest_endpoints.resolve_log(logs, "nope.csv") is None
+    (logs / "lift_20261107_120000.csv").write_text("a")
+    assert rest_endpoints.resolve_log(logs, "lift_20261107_120000.csv") is not None
 
 
-# ---------------------------------------------------------------- REST: recording
-
-def test_connect_does_not_start_recording(api):
-    client, fake, log, tmp = api
+def test_status_after_connect(api):
+    client, fake, _ = api
     assert client.post("/api/connect", json={"port": "COM9"}).status_code == 200
-    assert not log.is_active
-    assert client.get("/api/status").json()["recording"]["recording"] is False
-    assert list(tmp.iterdir()) == []
-
-
-def test_recording_needs_a_connection(api):
-    client, fake, log, _ = api
-    r = client.post("/api/recording/start")
-    assert r.status_code == 409
-    assert not log.is_active
-
-
-def test_recording_start_stop_and_disconnect_closes_it(api):
-    client, fake, log, tmp = api
-    client.post("/api/connect", json={"port": "COM9"})
-    state = client.post("/api/recording/start").json()
-    assert state["recording"] is True and state["file"].startswith("sli_session_")
-    assert client.get("/api/status").json()["recording"]["recording"] is True
-
-    assert client.post("/api/recording/stop").json()["recording"] is False
-    client.post("/api/recording/start")
-    client.post("/api/disconnect")
-    assert not log.is_active
-    assert len(list(tmp.glob("sli_session_*.csv"))) >= 1
+    assert client.get("/api/status").json()["connected"] is True
 
 
 def test_log_download_route_rejects_traversal(api):

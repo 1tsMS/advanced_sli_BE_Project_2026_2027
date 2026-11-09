@@ -3,11 +3,13 @@
 //  Formats SensorData into the $T CSV telemetry string
 //  sent to the PC at TELEMETRY_RATE_HZ.
 //
-//  Packet format:
+//  Packet format (20 fields):
 //  $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
 //     ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-//     safeLimit,loadPct,alarmLvl,ropeTotalMM,hookDropMM\n
-//  (the last two were appended later, so older parsers that read 15 fields still line up)
+//     safeLimit,loadPct,alarmLvl,ropeTotalMM,hookDropMM,
+//     accelDyn,jerk,imuRejected\n
+//  Fields are only ever appended, so a parser that reads the first N still lines up.
+//  accelDyn (m/s^2) and jerk (m/s^3) are boom-tip PEAKS since the previous $T.
 // ============================================================
 #ifndef TELEMETRY_FMT_H
 #define TELEMETRY_FMT_H

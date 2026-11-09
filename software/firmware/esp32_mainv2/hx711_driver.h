@@ -14,6 +14,7 @@
 #define HX711_DRIVER_H
 
 #include "config.h"
+#include "loadcell_health.h"
 #include <HX711.h>
 
 class HX711Driver {
@@ -34,6 +35,11 @@ public:
 
     /** Raw 24-bit counts of the last conversion (for load-cell calibration). */
     int32_t getLastRaw() const { return _lastRawValue; }
+
+    /** Is the BRIDGE alive (not just the HX711)? Broken wire = SATURATED / FROZEN / NEGATIVE. */
+    LoadCellHealth health() const { return _monitor.health(); }
+    /** Raw-count noise (max - min) over the last ~3 s: tens of counts on a live cell. */
+    int32_t noiseSpan() const { return _monitor.lastSpan(); }
 
     /** True once at least one conversion arrived in the last `maxAgeMs`. */
     bool isFresh(uint32_t maxAgeMs) const { return _lastSampleMs != 0 && (millis() - _lastSampleMs) <= maxAgeMs; }
@@ -79,6 +85,8 @@ private:
     double   _avgSum    = 0.0;
     double   _avgResult = 0.0;
     bool     _avgDone   = false;
+
+    LoadCellMonitor _monitor;
 };
 
 #endif // HX711_DRIVER_H

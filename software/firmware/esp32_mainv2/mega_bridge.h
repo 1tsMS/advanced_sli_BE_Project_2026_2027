@@ -1,61 +1,30 @@
 // ============================================================
-//  Mega Bridge — UART2 Communication to Arduino Mega
-//  Forwards motor G-code commands from ESP32 to Mega.
-//  The Mega + RAMPS 1.4 handles stepper motor execution.
+//  Mega Bridge — UART2 link to the Arduino Mega (RAMPS 1.4)
+//
+//  Write-only: CommandTask (the only user) sends stepper commands as text
+//  lines; the Mega parses them and drives the A4988s. The winch (M4) runs on
+//  the ESP32's own DRV8833, so it is never sent here. Nothing reads the Mega's
+//  replies: a lost line is covered by the dead-man (motions repeat every 100 ms)
+//  and by the periodic resend of the shaper / driver-idle settings.
 // ============================================================
 #ifndef MEGA_BRIDGE_H
 #define MEGA_BRIDGE_H
 
 #include "config.h"
 
-/**
- * Manages the UART2 serial link between ESP32 and Arduino Mega.
- *
- * Data flow:
- *   ESP32 CommandTask receives G-code from PC
- *   → MegaBridge forwards stepper commands (M1-M3, T0) to Mega
- *   → Mega parses and drives steppers via RAMPS 1.4
- *
- * Winch (M4) is handled directly by ESP32 via DRV8833,
- * so M4 commands are NOT forwarded to Mega.
- */
 class MegaBridge {
 public:
-    MegaBridge() : _megaSerial(nullptr), _connected(false) {}
-
-    /**
-     * Initialize UART2 connection to Mega.
-     * @param serial Pointer to HardwareSerial (Serial2 on ESP32)
-     */
+    /** Open UART2 at MEGA_BAUD on MEGA_RX_PIN / MEGA_TX_PIN. */
     void begin(HardwareSerial* serial);
 
-    /**
-     * Send a motor command to the Mega as G-code text.
-     * Only forwards M1 (swing), M2 (lift), M3 (tele), T0 (E-stop).
-     * M4 (winch) is handled locally by ESP32.
-     */
+    /** M1-M3 motion ("M2 S800 D1"), axis stop ("M0 A2") or E-stop ("T0"). */
     void sendMotorCommand(const MotorCommand& cmd);
 
-    /**
-     * Send a raw G-code string to the Mega.
-     */
-    void sendRaw(const char* gcode);
-
-    /**
-     * Check if Mega has sent any response/acknowledgment.
-     * Returns true if data is available on UART2.
-     */
-    bool hasResponse();
-
-    /**
-     * Read a line from Mega (if available).
-     * @return number of chars read, 0 if nothing
-     */
-    int readResponse(char* buffer, size_t bufLen);
+    /** Any other line (shaper "I1 P389", driver idle "R1", ...). */
+    void sendRaw(const char* line);
 
 private:
-    HardwareSerial* _megaSerial;
-    bool _connected;
+    HardwareSerial* _serial = nullptr;
 };
 
 #endif // MEGA_BRIDGE_H

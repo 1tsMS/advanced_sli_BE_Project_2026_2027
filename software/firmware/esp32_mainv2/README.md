@@ -72,10 +72,11 @@ All pins are defined in `config.h`.
 | (all buses) | | 4.7k pull-ups to 3V3; `test_codes/encoder_bus_test` checks them |
 | HX711 DT / SCK | 17 / 16 | load cell on the boom tip |
 | FSR 1-4 (FL, FR, RL, RR) | 34, 35, 39, 36 | outrigger force sensors, ADC1 (input-only pins) |
+| Fault-injection switch | 0 (BOOT) | test E6: closed = LOW, logged as `$EV,<ms>,FI,1`. Open it before a reset |
 | DRV8833 AIN1 / AIN2 | 13 / 14 | winch PWM |
 | DRV8833 EEP (nSLEEP) | 4 | 10k pull-down to GND: driver asleep during boot/flashing, woken by the firmware |
 | N20 encoder A / B | 18 / 19 | PCNT unit 0, 4x quadrature |
-| UART2 to Mega RX / TX | 23 / 27 | 9600 baud, Mega pins 18/19 |
+| UART2 to Mega RX / TX | 23 / 27 | 57600 baud, Mega pins 18/19 (flash both boards together) |
 | USB serial | | 115200 baud to the PC |
 
 GPIO12 is deliberately unused: it is a boot strapping pin and must be low at reset.
@@ -174,9 +175,10 @@ in `rtos_config.h`.
 | `soft_i2c.h` | Bit-banged I2C master on open-drain GPIO. Cannot hang; detects a clock line that won't rise. API mirrors `Wire`. |
 | `as5600_driver.h/.cpp` | AS5600 magnetic encoder: reads the 12-bit raw angle three times, takes the median, rejects bus garbage; reads magnet health (too weak / too strong). |
 | `encoder_axis.h/.cpp` | Turns raw AS5600 angles into an axis value: multi-turn counting, glitch gate, resync, reference/zero, invert, units per turn, save/restore. Pure logic. |
-| `mpu6050_driver.h/.cpp` | MPU6050 by direct register access: configure, read, reject corrupt samples, gyro calibration, complementary filter for roll/pitch. |
+| `mpu6050_driver.h/.cpp` | MPU6050 by direct register access: configure, read, reject corrupt samples, gyro + 1 g calibration. |
+| `imu_filter.h` | Pure filter maths (PC-tested): median of 3, gated complementary filter, boom-tip acceleration and jerk. |
 | `hx711_driver.h/.cpp` | Wraps the HX711 library non-blocking: one conversion per call when ready, tare and averaging as background state machines, staleness check. |
-| `fsr_reader.h` | Four FSRs on ADC1, raw 0-4095. |
+| `fsr_reader.h` | Four FSRs on ADC1: 4 reads averaged + 0.3 s exponential average, 0-4095 counts (= 0-3.3 V). |
 | `n20_encoder.h/.cpp` | N20 encoder on the ESP32 PCNT hardware (4x quadrature, glitch filter) and the DRV8833 winch outputs (PWM, brake). |
 
 ### Measurement
@@ -251,16 +253,26 @@ runs only in SensorTask, so there is one owner and no race.
 
 ### 6.3 IMU (MPU6050)
 
-- Configured to ±8 g, ±500 deg/s, on-chip low-pass filter 5 Hz.
+- Configured to ±8 g, ±500 deg/s, on-chip low-pass filter **21 Hz** (anti-alias
+  for 100 Hz sampling; it keeps the boom-tip shocks, the angle is smoothed in software).
 - **Rejected samples:** total acceleration outside 0.5-2 g, any gyro axis above
-  300 deg/s, or a gyro step above 100 deg/s between 10 ms samples (impossible
-  behind the 5 Hz filter). A new gyro level that holds for 5 samples is accepted.
-- **Complementary filter** at 100 Hz:
-  `angle = pred + (1 - a) × wrap(accelAngle - pred)` with `pred = angle + gyro × dt`
-  and `a = 0.99` (time constant about 1 s). The gyro tracks motion; the
-  accelerometer slowly removes drift. The `wrap()` keeps it correct near ±180°.
-- **Zero (CAL1):** averages the gyro for about 1 s (boom still) and stores the
-  current angle as the boom zero, plus which axis is the boom and which the tilt.
+  300 deg/s, or a gyro step above 100 deg/s between 10 ms samples. A new gyro
+  level that holds for 5 samples is accepted. The count is sent in `$T` (EMI indicator).
+- **Filter** (`imu_filter.h`, 100 Hz, unit-tested on the PC):
+  1. **Median of 3** per axis. The noise here is impulsive (a stepper edge
+     corrupts one I2C transfer); a median removes a single bad sample entirely,
+     a mean or exponential average would smear it. Costs 10 ms.
+  2. **Gated complementary filter:** `angle = pred + k × wrap(accelAngle - pred)`,
+     `pred = angle + gyro × dt`, `k = dt / (τ + dt) × trust`, τ = 1 s. `trust`
+     fades from 1 at exactly 1 g to 0 when |a| is 15 % off 1 g, so a jerk (boom
+     stop, load lift-off) is ridden through on the gyro instead of tilting the angle.
+  3. **Boom-tip acceleration** = |a − g|, with g rebuilt from the filtered angles
+     (no lag while rotating), and **jerk** = |a[k] − a[k−1]| / dt. Both are sent
+     as peaks per `$T` frame, so a 10 ms shock is not lost at 50 Hz.
+- **Zero (CAL1, and at boot):** averages gyro AND accelerometer for about 1 s
+  (boom still): gyro offset, accel scale to exactly 1 g, and the filter starts
+  from the MEAN gravity vector (one noisy sample used to set the zero before).
+  The current angle becomes the boom zero, plus which axis is boom and which tilt.
 - On a dropout the driver re-initialises every 0.5 s; meanwhile SensorTask holds
   the last good angle and reports `sensorsOK = false`.
 
@@ -287,7 +299,8 @@ Weight = (raw - offset) / scale, with a ±20 g dead band around zero.
   That is the drum side. The winch is fixed and the rope runs along the telescope,
   so extending pulls rope over the tip: hanging length = rope - (extension - extRef),
   where `extRef` is the extension recorded when the rope reference (`CAL4 A4`) was set.
-  Hook drop = hanging + 90 mm; total rope = rope + 245 + 90 mm (fixed by the drum).
+  Hook drop = hanging + 76 mm (knot to hook curve); total rope = rope + 288 + 76 mm
+  (288 = bearing centre to the load-cell edge, retracted; fixed by the drum).
 - Dead-man in CommandTask: no M4 for 400 ms = stop.
 
 ### 6.6 The SLI
@@ -314,11 +327,20 @@ is 0: operation there is not allowed, so the chart edges are soft travel limits.
      always counts as an improvement and the crane can't get stuck.
 4. Winch up (hoist) can only add load, so it is cut while the state is CUT.
 
+**Cut modes** (`SLI CUT P|R|S`, for test E5; every boot starts predictive):
+
+| Mode | Look-ahead |
+|---|---|
+| P predictive | the fixed step above |
+| R reactive | none: a direction is cut only once the load % is already at the cut % |
+| S speed-aware | max(fixed step, axis speed × 0.25 s); speeds from successive poses, 0.1 s smoothing |
+
 **Enforcement** (`command_task.cpp`): before forwarding a motion it calls
 `safety_motionAllowed()`. A refused command gets one `$ACK,SLI,REFUSED,...` per
 press. When SafetyTask sees a newly blocked direction it wakes CommandTask, which
-stops any axis already moving that way and sends `$ACK,SLI,CUT,...`. Worst case
-from limit to stop command: about 20 ms + one UART line to the Mega (~10 ms).
+stops any axis already moving that way and sends `$ACK,SLI,CUT,...` plus
+`$EV,<ms>,CUT,A<a>,D<d>`. Worst case from limit to stop command: about 20 ms +
+one UART line to the Mega (~1.2 ms at 57600).
 
 **Modes:**
 
@@ -384,6 +406,8 @@ ever full the line is dropped and counted (shown in DBG) instead of blocking.
 | `DBG` | debug report |
 | `CFG RATE <hz>` | telemetry rate |
 | `SHP 1 [L<mm>]` / `SHP 0` | swing input shaping on (L = pendulum length override) / off |
+| `SLI CUT P\|R\|S` | cut mode: predictive / reactive / speed-aware (not saved) |
+| `DRV IDLE 1\|0` | Mega switches idle A4988s off after 0.5 s / keeps them on. Sent as `R1`/`R0`, repeated every 2 s (not saved, default 1) |
 
 Swing input shaping is a ZV shaper on the Mega (`mega_executor/zv_shaper.h`):
 every swing speed change is applied as two halves T/2 apart, T = 2π√(L/g) with
@@ -398,8 +422,9 @@ button is held; that is the dead-man.
 
 | Prefix | Content |
 |---|---|
-| `$T` | telemetry, 50 Hz: boomAngle, extensionMM, measuredLoad, actualLoad, swingAngle, ropeLengthMM (calibrated: load-cell end to knot), fsr1-4, imuRoll (IMU boom angle), imuPitch (tilt), safeLoadLimit, loadPercent, alarmLevel, ropeTotalMM (+245 +90 mm), hookDropMM (+90 mm: load-cell end to hook tip) |
-| `$S` | SLI status, 5 Hz + on change: state, pct, capKg, zone, bypassLeftS, blockedHex, chart, mode |
+| `$T` | telemetry, 50 Hz: boomAngle, extensionMM, measuredLoad, actualLoad, swingAngle, ropeLengthMM (calibrated: load-cell end to knot), fsr1-4 (ADC counts, smoothed), imuRoll (IMU boom angle), imuPitch (tilt), safeLoadLimit, loadPercent, alarmLevel, ropeTotalMM (+288 +76 mm), hookDropMM (+76 mm: load-cell end to hook tip), accelDyn (m/s², peak), jerk (m/s³, peak), imuRejected |
+| `$S` | SLI status, 5 Hz + on change: state, pct, capKg, zone, bypassLeftS, blockedHex, chart, mode, why, cut mode (P/R/S), driver idle (0/1) |
+| `$EV` | timestamped event, firmware ms: `FI,<0\|1>` fault switch, `SLI,<state>,<pct>` state change, `CUT,A<a>,D<d>` motion cut. Latencies in E5/E6 come from these |
 | `$ACK,...` | command results (`$ACK,CAL7,OK,...`, `$ACK,SLI,REFUSED,A2,D0,CUT`, `$ACK,LC,COMMITTED,<name>`, ...) |
 | `$D,...` | debug report lines, ending with `$D,END` |
 | `$LC,...` | load chart readback, ending with `$LC,END` (or `$LC,NONE`) |
@@ -448,30 +473,37 @@ Reading it:
 
 ## 10. Tests
 
-The pure-logic files (`encoder_axis`, `load_chart`, `safety_logic`) have no
-Arduino dependency and are tested on the PC with g++ from `software/firmware`:
+The pure-logic files (`encoder_axis`, `load_chart`, `safety_logic`, `imu_filter.h`)
+have no Arduino dependency and are tested on the PC with g++ from `software/firmware`:
 
 ```bash
-g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 host_tests/test_safety.cpp esp32_mainv2/load_chart.cpp esp32_mainv2/safety_logic.cpp -o host_tests/test_safety && host_tests/test_safety
+g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 -I host_tests host_tests/test_safety.cpp esp32_mainv2/load_chart.cpp esp32_mainv2/safety_logic.cpp -o host_tests/test_safety && host_tests/test_safety
+g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 -I host_tests host_tests/test_imu_filter.cpp -o host_tests/test_imu_filter && host_tests/test_imu_filter
+g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 -I host_tests host_tests/test_encoder_axis.cpp esp32_mainv2/encoder_axis.cpp -o host_tests/test_encoder_axis && host_tests/test_encoder_axis
 ```
 
-They cover the chart parser and validation, interpolation, swing zones, FAULT,
-the selective cut, the predictive cut, hysteresis, chart-edge limits and the
-"outside the chart" recovery case.
+The SLI tests cover the chart parser and validation, interpolation, swing zones,
+FAULT, the selective cut, the three cut modes, hysteresis, chart-edge limits and
+the "outside the chart" recovery case. The IMU tests cover spike rejection,
+convergence with τ, gyro tracking, jerk gating, acceleration / jerk values and
+the ±180° wrap.
 
 The swing shaper (queue + T/2 math + a pendulum simulation: residual sway with
 and without shaping):
 
 ```bash
-g++ -std=c++17 -Wall -Wextra -I mega_executor -I esp32_mainv2 host_tests/test_shaper.cpp -o host_tests/test_shaper && host_tests/test_shaper
+g++ -std=c++17 -Wall -Wextra -I mega_executor -I esp32_mainv2 -I host_tests host_tests/test_shaper.cpp -o host_tests/test_shaper && host_tests/test_shaper
 ```
+
+Test binaries are git-ignored (`host_tests/*.exe`).
 
 ---
 
 ## 11. Known limits
 
 - **Boom angle comes from the IMU**, at the boom tip, so it includes boom flex
-  under load and needs about 1 s to settle after motion. The boom encoder is on
+  under load and the accelerometer correction has a 1 s time constant (motion
+  itself is tracked by the gyro without that lag). The boom encoder is on
   the leadscrew motor (non-linear), so it isn't used for the angle yet.
 - **Load is not angle-compensated yet:** `actualLoad` equals the raw reading.
 - **Swing direction for the SLI is assumed:** `SLI_SWING_D1_SIGN` in

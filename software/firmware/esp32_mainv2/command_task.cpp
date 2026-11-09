@@ -14,13 +14,10 @@
 extern const char* g_resetReason;
 
 // Subsystem references (set by init)
-static MegaBridge*   _mega      = nullptr;
-static N20Encoder*   _winch     = nullptr;
-static HX711Driver*  _loadCell  = nullptr;
+static MegaBridge*    _mega     = nullptr;
+static N20Encoder*    _winch    = nullptr;
+static HX711Driver*   _loadCell = nullptr;
 static MPU6050Driver* _imu      = nullptr;
-static AS5600Driver* _teleEnc   = nullptr;
-static AS5600Driver* _swingEnc  = nullptr;
-static AS5600Driver* _boomEnc   = nullptr;
 
 // Global sensor data — declared in esp32_main.ino
 extern SensorData sensorData;
@@ -65,6 +62,22 @@ static float         _shapeLenOvr   = 0.0f;   // mm, 0 = from the hook drop
 static uint16_t      _shapeSentMs   = 0;      // T/2 last sent to the Mega
 static float         _shapeLenMm    = 0.0f;
 static unsigned long _shapeLastTxMs = 0;
+
+// ---- A4988 release when idle (runs on the Mega; DRV IDLE 0|1) ----
+// On by default, like the Mega. Resent every SHAPER_RESEND_MS so a Mega that
+// reset (and fell back to its default) is put back in the mode under test.
+static volatile bool _drvIdle         = true;
+static unsigned long _drvLastTxMs     = 0;
+
+bool commandTask_driverIdle() { return _drvIdle; }
+
+static void driverIdleTick(bool force) {
+    if (!_mega) return;
+    const unsigned long now = millis();
+    if (!force && now - _drvLastTxMs < SHAPER_RESEND_MS) return;
+    _mega->sendRaw(_drvIdle ? "R1" : "R0");
+    _drvLastTxMs = now;
+}
 
 /** Keep the Mega's T/2 in step with the hook drop; resend now and then in case it reset. */
 static void shaperTick(bool force) {
@@ -122,26 +135,16 @@ static void enforceSafety() {
             stopAxis(a);
             _refusedDir[a] = m.dir + 1;
             serialLine("$ACK,SLI,CUT,A%u,D%u,%s", a, m.dir, why);
+            serialLine("$EV,%lu,CUT,A%u,D%u", now, a, m.dir);   // firmware clock, for cut latency
         }
     }
 }
 
-void commandTask_init(
-    MegaBridge* mega,
-    N20Encoder* winch,
-    HX711Driver* loadCell,
-    MPU6050Driver* imu,
-    AS5600Driver* teleEnc,
-    AS5600Driver* swingEnc,
-    AS5600Driver* boomEnc
-) {
+void commandTask_init(MegaBridge* mega, N20Encoder* winch, HX711Driver* loadCell, MPU6050Driver* imu) {
     _mega     = mega;
     _winch    = winch;
     _loadCell = loadCell;
     _imu      = imu;
-    _teleEnc  = teleEnc;
-    _swingEnc = swingEnc;
-    _boomEnc  = boomEnc;
 }
 
 /** Called from the UART driver's event task whenever bytes arrive (Serial.onReceive). */
@@ -159,6 +162,7 @@ void commandTask(void* pvParameters) {
     int lineIdx = 0;
 
     esp_task_wdt_add(NULL);
+    driverIdleTick(true);            // put the Mega in the default mode at boot
 
     for (;;) {
         // Event-driven: sleep until the UART reports input, or at most
@@ -295,6 +299,9 @@ void commandTask(void* pvParameters) {
                             case CAL_LOAD:
                                 queueCal(CAL_LOAD, cmd.calSub, cmd.encValue, -1);
                                 break;
+                            case CAL_LOAD_ANGLE:
+                                queueCal(CAL_LOAD_ANGLE, cmd.calSub, cmd.encValue, -1);
+                                break;
                             case CAL_AXIS_SCALE:
                                 queueCal(CAL_AXIS_SCALE, cmd.encAxis, cmd.encValue, cmd.encInvert);
                                 break;
@@ -351,7 +358,10 @@ void commandTask(void* pvParameters) {
                         break;
 
                     case CMD_SLI:
-                        if (cmd.sliOff) {
+                        if (cmd.sliCut) {
+                            safety_setCutMode((SliCutMode)cmd.cutMode);
+                            serialLine("$ACK,SLI,CUT,%c", sli_cutModeLetter((SliCutMode)cmd.cutMode));
+                        } else if (cmd.sliOff) {
                             safety_off();
                             serialLine("$ACK,SLI,OFF");
                         } else if (cmd.bypassS > 0) {
@@ -366,6 +376,12 @@ void commandTask(void* pvParameters) {
                     case CMD_RESET:
                         safety_reset();
                         serialLine("$ACK,RST");
+                        break;
+
+                    case CMD_DRIVER:
+                        _drvIdle = cmd.drvIdle;
+                        driverIdleTick(true);
+                        serialLine("$ACK,DRV,IDLE,%u", _drvIdle ? 1u : 0u);
                         break;
 
                     default:
@@ -385,6 +401,7 @@ void commandTask(void* pvParameters) {
 
         // Swing shaper period follows the hook drop (winch / telescope change it)
         shaperTick(false);
+        driverIdleTick(false);
 
         // Winch dead-man
         if (_winchActive && (millis() - _lastWinchCmdMs) > MOTION_TIMEOUT_MS) {

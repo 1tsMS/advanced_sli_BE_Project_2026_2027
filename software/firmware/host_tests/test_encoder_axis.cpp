@@ -1,26 +1,15 @@
 // ============================================================
-//  PC unit tests for esp32_main/encoder_axis.cpp (pure logic, no Arduino)
+//  PC unit tests for esp32_mainv2/encoder_axis.cpp (pure logic, no Arduino)
 //
 //  Build + run from software/firmware:
-//    g++ -std=c++17 -Wall -Wextra -I esp32_main host_tests/test_encoder_axis.cpp esp32_main/encoder_axis.cpp -o host_tests/test_encoder_axis && host_tests/test_encoder_axis
+//    g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 -I host_tests host_tests/test_encoder_axis.cpp esp32_mainv2/encoder_axis.cpp -o host_tests/test_encoder_axis && host_tests/test_encoder_axis
 // ============================================================
 #include "encoder_axis.h"
 #include <cmath>
 #include <cstdio>
 
-static int g_pass = 0, g_fail = 0;
+#include "check.h"
 static uint32_t T = 0;   // fake millis() clock for update()
-
-#define CHECK(cond) do { \
-    if (cond) g_pass++; \
-    else { g_fail++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } \
-} while (0)
-
-#define CHECK_NEAR(a, b, tol) do { \
-    const double _a = (a), _b = (b); \
-    if (std::fabs(_a - _b) <= (tol)) g_pass++; \
-    else { g_fail++; std::printf("FAIL %s:%d  %s = %.4f, expected %.4f\n", __FILE__, __LINE__, #a, _a, _b); } \
-} while (0)
 
 static void test_wrapDiff() {
     CHECK(EncoderAxis::wrapDiff(10, 5) == 5);
@@ -194,6 +183,5 @@ int main() {
     test_resync();
     test_failed_reads_during_motion();
     test_restore_keeps_zero();
-    std::printf("%d passed, %d failed\n", g_pass, g_fail);
-    return g_fail == 0 ? 0 : 1;
+    return check_summary("encoder_axis");
 }

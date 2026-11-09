@@ -1,5 +1,5 @@
 """
-Post-lift analysis: phases, load/dynamics metrics, operator score and cost.
+Post-lift analysis: phases, load/dynamics metrics and the operator score.
 
 Pure functions over the rows the LiftRecorder wrote (one per telemetry frame,
 ~50 Hz). Nothing here talks to hardware. Every number in the report is
@@ -8,10 +8,12 @@ the score can be explained (and argued with) in the report and the paper.
 
 Row keys used: t (s from lift start), load (kg), pct, capKg, state, mode,
 m1..m4 (-1/0/+1: commanded direction per axis, 0 = idle), shaping (0/1),
-tipValid, tipMargin.
+tipValid, tipMargin, accelDyn / jerk (boom-tip peaks; absent in lifts recorded
+before 2026-11-07, then the shock list is empty).
 """
 from __future__ import annotations
 
+import bisect
 import statistics
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Sequence
@@ -27,6 +29,8 @@ class AnalysisSettings:
     # Dynamics
     snatchDaf: float = 1.30          # pick-up DAF above this = snatch
     rippleWindowS: float = 2.0       # load ripple measured this long after a stop
+    shockAccel: float = 1.0          # m/s^2 beyond gravity at the boom tip = a shock (tune on the crane)
+    shockGapS: float = 0.5           # peaks closer than this belong to one shock
     # Penalty points (safety)
     pen: dict = field(default_factory=lambda: {
         "cutEvent": 10.0,      # each entry into CUT
@@ -40,11 +44,6 @@ class AnalysisSettings:
         "sliNotArmed": 10.0,   # lift done (partly) with the SLI in BYPASS or OFF
     })
     safetyZeroAt: float = 50.0       # penalty points at which the safety score hits 0
-    # Cost (model rates, edit in Settings)
-    currency: str = "INR"
-    ratePerMin: float = 50.0
-    ratePerKg: float = 100.0
-    ratePerPenaltyPoint: float = 5.0   # cost is mostly time + weight; penalties add on top
 
 
 def _clamp01(x: float) -> float:
@@ -67,6 +66,69 @@ def _moving(r: dict) -> bool:
 
 def _std_g(vals: Sequence[float]) -> float:
     return statistics.pstdev(vals) * 1000.0 if len(vals) > 1 else 0.0
+
+
+def find_shocks(rows: Sequence[dict], pickups: Sequence[dict], loaded: Sequence[bool],
+                events: Sequence[dict], cfg: AnalysisSettings) -> list[dict]:
+    """Boom-tip shocks: runs of accelDyn >= idle level + cfg.shockAccel, merged when closer than
+    cfg.shockGapS. Each gets its peak acceleration and jerk and the most likely cause,
+    looked up in what happened just before it (within 0.6 s):
+      lift-off / set-down   the load came on / went off the hook
+      <axis> stop / start   an axis was released / started
+      SLI cut               the SLI stopped a motion
+      unexplained           none of the above (bump, vibration, sensor noise)"""
+    t = [r["t"] for r in rows]
+    # Idle level = median over the lift: a constant offset (IMU scale error, a running
+    # stepper's vibration) must not count as a shock. Shocks are short, so the median
+    # is the resting value.
+    vals = [r["accelDyn"] for r in rows if r.get("accelDyn") is not None]
+    idle = statistics.median(vals) if vals else 0.0
+    hits = [i for i, r in enumerate(rows) if (r.get("accelDyn") or 0.0) - idle >= cfg.shockAccel]
+    groups: list[list[int]] = []
+    for i in hits:
+        if groups and t[i] - t[groups[-1][-1]] <= cfg.shockGapS:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+
+    cut_times = [e["t"] for e in events if e.get("kind") == "cut" or (e.get("kind") == "ev" and e.get("ev") == "CUT")]
+    out = []
+    for g in groups:
+        pk = max(g, key=lambda i: rows[i].get("accelDyn") or 0.0)
+        tp = t[pk]
+        jerk = max((rows[i].get("jerk") or 0.0) for i in range(max(0, g[0] - 1), min(len(rows), g[-1] + 2)))
+
+        lo, hi = bisect.bisect_left(t, tp - 0.6), bisect.bisect_right(t, tp + 0.1)
+
+        def recent(cond) -> Optional[float]:
+            """Latest time in [tp - 0.6, tp + 0.1] where cond(i) holds."""
+            best = None
+            for i in range(lo, hi):
+                if cond(i):
+                    best = t[i]
+            return best
+
+        causes = []
+        if any(tp - 0.6 <= p["t"] <= tp + 0.3 for p in pickups):
+            causes.append((0.0, "lift-off"))
+        sd = recent(lambda i: i > 0 and loaded[i - 1] and not loaded[i])
+        if sd is not None:
+            causes.append((tp - sd, "set-down"))
+        for a, name in AXES.items():
+            k = f"m{a}"
+            st = recent(lambda i: i > 0 and rows[i - 1].get(k, 0) != 0 and rows[i].get(k, 0) == 0)
+            if st is not None:
+                causes.append((tp - st, f"{name} stop"))
+            go = recent(lambda i: i > 0 and rows[i - 1].get(k, 0) == 0 and rows[i].get(k, 0) != 0)
+            if go is not None:
+                causes.append((tp - go, f"{name} start"))
+        for ct in cut_times:
+            if tp - 0.6 <= ct <= tp + 0.1:
+                causes.append((abs(tp - ct), "SLI cut"))
+        cause = min(causes)[1] if causes else "unexplained"
+        out.append({"t": round(tp, 2), "accel": round((rows[pk].get("accelDyn") or 0.0) - idle, 2),
+                    "jerk": round(jerk, 1), "cause": cause})
+    return out
 
 
 def analyse(rows: Sequence[dict], events: Sequence[dict] = (), cfg: Optional[AnalysisSettings] = None,
@@ -207,6 +269,9 @@ def analyse(rows: Sequence[dict], events: Sequence[dict] = (), cfg: Optional[Ana
                                       "shaped": bool(rows[i].get("shaping", 0)) and a == 1})
     minutes = max(dur / 60.0, 1e-6)
     ripple = statistics.mean(s["rippleG"] for s in stops) if stops else 0.0
+    shocks = find_shocks(rows, pickups, loaded, events, cfg)
+    accel_vals = [r["accelDyn"] for r in rows if r.get("accelDyn") is not None]
+    jerk_vals = [r["jerk"] for r in rows if r.get("jerk") is not None]
     swing_stops = [s for s in stops if s["axis"] == "swing"]
     daf_max = max((p["daf"] for p in pickups), default=1.0)
 
@@ -225,11 +290,6 @@ def analyse(rows: Sequence[dict], events: Sequence[dict] = (), cfg: Optional[Ana
     safety = 40.0 * _clamp01(1.0 - points / cfg.safetyZeroAt)
     total = safety + smooth + eff
     grade = "A" if total >= 85 else "B" if total >= 70 else "C" if total >= 55 else "D"
-
-    # ---------------- cost ----------------
-    c_time = minutes * cfg.ratePerMin
-    c_load = lifted_kg * cfg.ratePerKg
-    c_pen = points * cfg.ratePerPenaltyPoint
 
     # ---------------- flags (timeline notes for the report) ----------------
     flags = []
@@ -250,6 +310,9 @@ def analyse(rows: Sequence[dict], events: Sequence[dict] = (), cfg: Optional[Ana
         flags.append({"t": 0.0, "level": "warn", "text": f"SLI mode during lift: {', '.join(modes)}"})
     if not pickups:
         flags.append({"t": 0.0, "level": "info", "text": "No load detected on the hook"})
+    for s in shocks:
+        flags.append({"t": s["t"], "level": "info",
+                      "text": f"Boom-tip shock {s['accel']:.1f} m/s² (jerk {s['jerk']:.0f} m/s³): {s['cause']}"})
     flags.sort(key=lambda f: f["t"])
 
     return {
@@ -279,6 +342,11 @@ def analyse(rows: Sequence[dict], events: Sequence[dict] = (), cfg: Optional[Ana
             "stops": stops,
         },
         "efficiency": {"idleS": round(idle_s, 1), "idleFrac": round(idle_frac, 3)},
+        "dynamics": {
+            "peakAccel": round(max(accel_vals), 2) if accel_vals else None,
+            "peakJerk": round(max(jerk_vals), 1) if jerk_vals else None,
+            "shocks": shocks,
+        },
         "penalty": {"points": round(points, 1),
                     "items": [{"what": w, "value": v, "points": round(p, 1)} for w, v, p in items if p > 0]},
         "score": {
@@ -287,12 +355,6 @@ def analyse(rows: Sequence[dict], events: Sequence[dict] = (), cfg: Optional[Ana
             "max": {"safety": 40, "smoothness": 35, "efficiency": 25},
             "parts": {"daf": round(s_daf, 2), "ripple": round(s_rip, 2), "reversals": round(s_rev, 2),
                       "idle": round(s_idle, 2), "jogRate": round(s_jog, 2)},
-        },
-        "cost": {
-            "currency": cfg.currency,
-            "time": round(c_time, 2), "load": round(c_load, 2), "penalty": round(c_pen, 2),
-            "total": round(c_time + c_load + c_pen, 2),
-            "rates": {"perMin": cfg.ratePerMin, "perKg": cfg.ratePerKg, "perPenaltyPoint": cfg.ratePerPenaltyPoint},
         },
         "flags": flags,
         "settings": asdict(cfg),

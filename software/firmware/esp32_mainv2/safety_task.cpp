@@ -2,7 +2,7 @@
 //  SafetyTask — Implementation
 // ============================================================
 #include "safety_task.h"
-#include "safety_logic.h"
+#include "command_task.h"   // commandTask_driverIdle() for the $S line
 #include "config.h"
 #include "serial_out.h"
 #include "persist.h"
@@ -18,11 +18,13 @@ static LoadChart    _chart;                 // active chart, valid only if _char
 static bool         _chartValid  = false;
 static uint32_t     _chartSeq    = 0;       // bumped on every commit
 static uint8_t      _blocked     = 0xFF;    // nothing allowed until the first evaluation
+static uint8_t      _limits      = 0;       // travel limits (end stops): enforced in every mode
 static SliState     _state       = SLI_FAULT;
 static bool         _estop       = false;
 static bool         _bypass      = false;
 static uint32_t     _bypassEndMs = 0;
 static bool         _off         = false;   // SLI OFF: no motion cut until SLI ON or reboot
+static SliCutMode   _cutMode     = SLI_CUT_PREDICTIVE;
 
 // CommandTask-only: chart being uploaded
 static LoadChartStage _stage;
@@ -61,10 +63,12 @@ bool safety_motionAllowed(uint8_t axis, uint8_t dir, const char** reason) {
     const bool     bypass  = bypassActiveLocked(millis());
     const bool     off     = _off;
     const uint8_t  blocked = _blocked;
+    const uint8_t  limits  = _limits;
     const SliState state   = _state;
     taskEXIT_CRITICAL(&_mux);
 
     if (estop)  { *reason = "ESTOP"; return false; }   // E-stop latch holds in every mode
+    if (limits & sli_bit(axis, dir)) { *reason = "TRAVEL"; return false; }   // end stop: every mode too
     if (bypass || off) return true;
     if (blocked & sli_bit(axis, dir)) {
         // CUT/FAULT name the state; OK/WARN means a predictive cut or chart edge
@@ -78,13 +82,6 @@ void safety_estop() {
     taskENTER_CRITICAL(&_mux);
     _estop = true;
     taskEXIT_CRITICAL(&_mux);
-}
-
-bool safety_estopLatched() {
-    taskENTER_CRITICAL(&_mux);
-    const bool e = _estop;
-    taskEXIT_CRITICAL(&_mux);
-    return e;
 }
 
 void safety_reset() {
@@ -114,6 +111,35 @@ void safety_off() {
     _bypass = false;
     taskEXIT_CRITICAL(&_mux);
 }
+
+void safety_setCutMode(SliCutMode m) {
+    taskENTER_CRITICAL(&_mux);
+    _cutMode = m;
+    taskEXIT_CRITICAL(&_mux);
+}
+
+// ======================== AXIS SPEEDS (SPEED cut mode) ========================
+// Differentiated from successive poses (20 ms apart) and smoothed with a 0.1 s
+// exponential average: the boom angle comes through the IMU filter and the
+// encoders step in counts, so the raw difference is noisy.
+struct RateEstimator {
+    static constexpr float TAU_S = 0.1f;
+    bool  have = false;
+    float boom = 0, ext = 0, swing = 0;      // last pose
+    float rBoom = 0, rExt = 0, rSwing = 0;   // smoothed rates
+
+    void update(const SafetyInputs& in, float dt) {
+        if (!in.sensorsOK || !(dt > 0.0f)) { *this = RateEstimator(); return; }
+        if (have) {
+            const float k = dt / (TAU_S + dt);
+            rBoom  += k * ((in.boomDeg  - boom)  / dt - rBoom);
+            rExt   += k * ((in.extMm    - ext)   / dt - rExt);
+            rSwing += k * ((in.swingDeg - swing) / dt - rSwing);
+        }
+        boom = in.boomDeg; ext = in.extMm; swing = in.swingDeg;
+        have = true;
+    }
+};
 
 // ======================== LOAD CHART UPLOAD ========================
 
@@ -212,8 +238,11 @@ void safetyTask(void* pvParameters) {
     uint32_t  seenSeq    = 0xFFFFFFFF;
     SliState  prevState  = SLI_FAULT;
     uint8_t   prevBlocked = 0xFF;
+    uint8_t   prevLimits  = 0;
     bool      prevEstop = false, prevBypass = false, prevOff = false;
     uint32_t  cycle = 0;
+    RateEstimator rates;
+    uint32_t  lastEvalMs = millis();
 
     for (;;) {
         esp_task_wdt_reset();
@@ -225,6 +254,7 @@ void safetyTask(void* pvParameters) {
             chartValid = _chartValid;
             if (chartValid) chart = _chart;
         }
+        const SliCutMode cutMode = _cutMode;
         taskEXIT_CRITICAL(&_mux);
 
         // Pose + load. If the mutex is busy, fail safe: treat the sensors as down.
@@ -241,11 +271,21 @@ void safetyTask(void* pvParameters) {
             xSemaphoreGive(sensorMutex);
         }
 
-        const SafetyResult r = sli_evaluate(chartValid ? &chart : nullptr, in, prevState);
-
         const uint32_t now = millis();
+        rates.update(in, (now - lastEvalMs) / 1000.0f);
+        lastEvalMs   = now;
+        in.boomRate  = rates.rBoom;
+        in.extRate   = rates.rExt;
+        in.swingRate = rates.rSwing;
+        in.cutMode   = cutMode;
+
+        const SafetyResult r = sli_evaluate(chartValid ? &chart : nullptr, in, prevState);
+        if (r.state != prevState) serialLine("$EV,%lu,SLI,%s,%.1f", (unsigned long)now, sli_stateName(r.state), r.pct);
+
+        const uint8_t limits = sli_travelLimits(in);
         taskENTER_CRITICAL(&_mux);
         _blocked = r.blocked;
+        _limits  = limits;
         _state   = r.state;
         const bool estop  = _estop;
         const bool bypass = bypassActiveLocked(now);
@@ -262,7 +302,7 @@ void safetyTask(void* pvParameters) {
 
         // Newly blocked directions, or the bypass / OFF just ended: CommandTask
         // must stop anything moving that way right now
-        if ((r.blocked & ~prevBlocked) || (prevBypass && !bypass) || (prevOff && !off)) {
+        if ((r.blocked & ~prevBlocked) || (limits & ~prevLimits) || (prevBypass && !bypass) || (prevOff && !off)) {
             if (g_commandTask) xTaskNotifyGive(g_commandTask);
         }
 
@@ -273,15 +313,17 @@ void safetyTask(void* pvParameters) {
             char why[48];
             reasonText(r.reason, sensorFault, why, sizeof(why));
             // State and blocked mask are what the SLI WOULD do; mode says whether it is enforced
-            serialLine("$S,%s,%.1f,%.3f,%d,%lu,%02X,%s,%s,%s",
+            serialLine("$S,%s,%.1f,%.3f,%d,%lu,%02X,%s,%s,%s,%c,%u",
                        estop ? "ESTOP" : sli_stateName(r.state),
                        r.pct, r.capKg, (int)r.zone, (unsigned long)bypassLeftS,
                        (unsigned)r.blocked, chartValid ? chart.name : "NONE",
-                       off ? "OFF" : bypass ? "BYPASS" : "ARMED", why);
+                       off ? "OFF" : bypass ? "BYPASS" : "ARMED", why,
+                       sli_cutModeLetter(cutMode), commandTask_driverIdle() ? 1u : 0u);
         }
 
         prevState   = r.state;
         prevBlocked = r.blocked;
+        prevLimits  = limits;
         prevEstop   = estop;
         prevBypass  = bypass;
         prevOff     = off;

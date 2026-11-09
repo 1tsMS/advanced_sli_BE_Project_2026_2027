@@ -19,15 +19,10 @@
  * Initialize the command task with references to subsystems.
  * Call ONCE in setup() before creating the task.
  */
-void commandTask_init(
-    MegaBridge* mega,
-    N20Encoder* winch,
-    HX711Driver* loadCell,
-    MPU6050Driver* imu,
-    AS5600Driver* teleEnc,
-    AS5600Driver* swingEnc,
-    AS5600Driver* boomEnc
-);
+void commandTask_init(MegaBridge* mega, N20Encoder* winch, HX711Driver* loadCell, MPU6050Driver* imu);
+
+/** Driver idle release as last sent to the Mega (for the $S line). */
+bool commandTask_driverIdle();
 
 /**
  * FreeRTOS task — blocks on Serial.available(), parses G-code,

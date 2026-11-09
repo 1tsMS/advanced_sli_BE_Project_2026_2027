@@ -1,8 +1,11 @@
 import { useState, useEffect } from "react";
 import { PlugZap, Unplug, Wifi, WifiOff, RefreshCcw } from "lucide-react";
 import { TippingCard } from "./TippingCard";
+import { TestModesCard } from "./TestModesCard";
+import { AppearanceCard } from "./AppearanceCard";
+import type { SafetyStatus } from "../../types";
+import { API_BASE, BACKEND_URL, WS_URL } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 
 interface PortEntry { port: string; description: string; }
 interface BackendStatus {
@@ -15,9 +18,10 @@ interface BackendStatus {
 
 interface SettingsTabProps {
   wsConnected: boolean;
+  safety: SafetyStatus | null;
 }
 
-export function SettingsTab({ wsConnected }: SettingsTabProps) {
+export function SettingsTab({ wsConnected, safety }: SettingsTabProps) {
   const [ports, setPorts]       = useState<PortEntry[]>([]);
   const [selectedPort, setPort] = useState("");
   const [baud, setBaud]         = useState(115200);
@@ -80,6 +84,7 @@ export function SettingsTab({ wsConnected }: SettingsTabProps) {
       <div className="settings-grid">
 
         {/* Connection card */}
+        <AppearanceCard />
         <div className="settings-card">
           <div className="section-label">Serial Connection</div>
 
@@ -110,7 +115,7 @@ export function SettingsTab({ wsConnected }: SettingsTabProps) {
           {/* Port description */}
           {selectedPort && (
             <div style={{
-              fontSize: 11.5, color: "var(--text-secondary)", paddingLeft: 92,
+              fontSize: "var(--fs-sm)", color: "var(--text-secondary)", paddingLeft: 92,
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}>
               {ports.find(p => p.port === selectedPort)?.description ?? ""}
@@ -136,7 +141,7 @@ export function SettingsTab({ wsConnected }: SettingsTabProps) {
           </div>
 
           {msg && (
-            <div style={{ fontSize: 12, color: "var(--cyan)", fontFamily: "var(--font-mono)", marginTop: 4 }}>
+            <div style={{ fontSize: "var(--fs-md)", color: "var(--text)", fontFamily: "var(--font-mono)", marginTop: 4 }}>
               {msg}
             </div>
           )}
@@ -173,14 +178,15 @@ export function SettingsTab({ wsConnected }: SettingsTabProps) {
 
           <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
             <div className="section-label">Endpoints</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-secondary)" }}>
-              <span>REST  → <strong style={{ color: "var(--cyan)" }}>http://localhost:8000/api</strong></span>
-              <span>WS    → <strong style={{ color: "var(--cyan)" }}>ws://localhost:8000/ws/telemetry</strong></span>
-              <span>Docs  → <strong style={{ color: "var(--text-primary)" }}>http://localhost:8000/docs</strong></span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, fontFamily: "var(--font-mono)", fontSize: "var(--fs-sm)", color: "var(--text-secondary)" }}>
+              <span>REST  → <strong style={{ color: "var(--text)" }}>{API_BASE}</strong></span>
+              <span>WS    → <strong style={{ color: "var(--text)" }}>{WS_URL}</strong></span>
+              <span>Docs  → <strong style={{ color: "var(--text)" }}>{BACKEND_URL}/docs</strong></span>
             </div>
           </div>
         </div>
         <TippingCard />
+        <TestModesCard safety={safety} />
       </div>
     </div>
   );
@@ -193,7 +199,7 @@ function StatusRow({
 }) {
   return (
     <div className="status-row">
-      {icon && <span style={{ color: ok ? "var(--green)" : "var(--text-muted)" }}>{icon}</span>}
+      {icon && <span style={{ color: ok ? "var(--text)" : "var(--text-muted)" }}>{icon}</span>}
       <span className="status-key">{label}</span>
       <span className={`status-value ${ok ? "ok" : "err"}`}>{value}</span>
     </div>

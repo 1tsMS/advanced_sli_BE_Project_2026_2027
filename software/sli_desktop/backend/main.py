@@ -9,7 +9,7 @@ Also runs the main packet processing loop that:
   - Reads lines from SerialManager.rx_queue
   - Parses them via PacketParser
   - Broadcasts telemetry/debug to frontend via WebSocket
-  - Logs frames to CSV via SessionLogger
+  - Records lifts (Start lift on the dashboard) via LiftRecorder
 """
 from __future__ import annotations
 import asyncio
@@ -26,7 +26,6 @@ from sli_backend.config.settings import (
 from sli_backend.core.serial_manager import SerialManager
 from sli_backend.core.packet_parser import PacketParser
 from sli_backend.core.command_router import CommandRouter
-from sli_backend.core.session_logger import SessionLogger
 from sli_backend.core.lift_recorder import LiftRecorder
 from sli_backend.core.tipping import TippingStore
 from sli_backend.api.models import TelemetryFrame, DebugReport, SafetyStatus
@@ -53,7 +52,6 @@ logger = logging.getLogger(__name__)
 # ======================== SUBSYSTEMS ========================
 serial_mgr   = SerialManager()
 cmd_router   = CommandRouter(serial_mgr)
-session_log  = SessionLogger()
 pkt_parser   = PacketParser()
 lift_rec     = LiftRecorder(LOG_DIR, PROFILE_DIR)
 tip_store    = TippingStore(PROFILE_DIR / "tipping.json")
@@ -89,10 +87,10 @@ async def startup() -> None:
     logger.info("=== Advanced SLI Backend starting ===")
 
     # Inject serial + logging into REST endpoints
-    init_endpoints(serial_mgr, cmd_router, session_log)
+    init_endpoints(serial_mgr, cmd_router)
     init_lift_endpoints(lift_rec, tip_store, cmd_router)
 
-    # USB unplugged / COM port died: close any open recording right away
+    # USB unplugged / COM port died
     serial_mgr.on_disconnect = _on_serial_lost
 
     # Register PacketParser callbacks → WebSocket + logger
@@ -103,6 +101,7 @@ async def startup() -> None:
         on_safety=_on_safety,
         on_chart=_on_chart,
         on_shaping=_on_shaping,
+        on_event=_on_event,
     )
 
     # Launch background packet processing loop
@@ -115,8 +114,6 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     """Graceful cleanup."""
-    if session_log.is_active:
-        session_log.end_session()
     if lift_rec.active:
         lift_rec.stop()
     if serial_mgr.is_connected:
@@ -155,13 +152,13 @@ async def packet_processing_loop() -> None:
 def _on_telemetry(frame: TelemetryFrame) -> None:
     """Called by PacketParser when a $T frame is decoded."""
     # Tipping margin from the 4 FSRs (backend-side, warn only)
-    tip = tip_store.update(frame.fsr)
+    tip = tip_store.update(frame.fsr, frame.actualLoad)
     frame.tipValid, frame.tipMargin = tip["valid"], tip["marginPct"]
     frame.copX, frame.copY, frame.tipWarn = tip["copX"], tip["copY"], tip["warn"]
+    frame.fsrShare = tip["shares"] if tip["valid"] else None
+    frame.padKg = tip["padKg"]
     # Fire and forget — schedule broadcast
     asyncio.create_task(broadcast_telemetry(frame))
-    # Log to CSV
-    session_log.log_frame(frame)
     lift_rec.on_frame(frame, tip)
 
 
@@ -169,8 +166,6 @@ def _on_serial_lost(reason: str) -> None:
     """Called by SerialManager when the port drops without a disconnect request."""
     logger.warning(f"ESP32 link lost ({reason})")
     lift_rec.shaping = False           # the ESP32 boots with shaping off
-    if session_log.is_active:
-        session_log.end_session()
 
 
 def _on_debug(report: DebugReport) -> None:
@@ -195,6 +190,12 @@ def _on_shaping(shp: dict) -> None:
     """Called for every $SHP line (swing input shaping state from the ESP32)."""
     lift_rec.shaping = shp["on"]
     asyncio.create_task(ws_manager.broadcast({"type": "shaping", **shp}))
+
+
+def _on_event(ev: dict) -> None:
+    """Called for every $EV line (timestamped firmware event)."""
+    lift_rec.on_event(ev)
+    asyncio.create_task(ws_manager.broadcast({"type": "event", **ev}))
 
 
 def _on_chart(chart: dict) -> None:

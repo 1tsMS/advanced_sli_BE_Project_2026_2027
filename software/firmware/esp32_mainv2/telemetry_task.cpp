@@ -39,6 +39,8 @@ void telemetryTask(void* pvParameters) {
         // Deadline reached: telemetry goes first, so a busy queue can't starve it
         if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             snapshot = sensorData;
+            sensorData.accelDynPk = 0.0f;   // peaks restart after every $T
+            sensorData.jerkPk     = 0.0f;
             xSemaphoreGive(sensorMutex);
         }
         formatter.format(snapshot, txBuffer, sizeof(txBuffer));

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MotionAxis } from "./useHoldToMove";
+import { API_BASE } from "../api";
 
-const API_BASE = "http://localhost:8000/api";
 const DEADZONE = 0.15;
 
 interface MotionControl {

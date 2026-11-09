@@ -5,6 +5,9 @@
 #include "encoder_axis.h"
 #include "serial_out.h"
 #include "persist.h"
+#include "safety_logic.h"   // SLI_MAX_LOAD_KG
+#include "load_angle.h"     // boom-angle correction of the load cell
+#include "load_filter.h"    // adaptive smoothing of the corrected load
 #include <Preferences.h>     // reads at boot only; writes go through persist.h
 #include "esp_task_wdt.h"
 
@@ -32,8 +35,8 @@ static EncoderAxis _axis[ENC_COUNT] = {
 };
 static const char* AXIS_NAME[ENC_COUNT] = { "SWING", "BOOM", "TELE" };
 
-// Boom angle comes from the boom encoder once it has been zeroed (CAL4 A2);
-// until then the IMU is used, as before.
+// The boom encoder has been referenced (CAL4 A2). It only becomes the boom angle
+// source with BOOM_ANGLE_FROM_ENCODER (config.h); the IMU is the source until then.
 static bool _boomCalibrated = false;
 
 // IMU calibration (boom angle seen by the IMU + sideways lean)
@@ -67,14 +70,29 @@ static float   _loadCalPendingKg = 0.0f;
 static uint32_t _loadCalStartMs = 0;
 static bool    _loadScaleCalibrated = false;
 
-// ---- Hardware-I2C bus task (bus 0: MPU6050, bus 1: boom AS5600, bus 3: swing AS5600) ----
-// The ESP-IDF 4.4 I2C driver inside this Arduino core waits at least 1 s when a
-// transfer hangs (Wire.setTimeOut can't shorten it). Motor noise on the long IMU
-// cable caused exactly that: a ~2 s freeze of the WHOLE sensor loop, telescope
-// included. So the two hardware buses are read by their own task. A hang there
-// now only delays swing / boom / IMU; the telescope (soft I2C), load cell, FSRs
-// and winch keep updating at 100 Hz. That task only reads raw values; all encoder
-// maths, calibration and saving stay in SensorTask (single owner, no races).
+// ---- Load-cell boom-angle correction (load_angle.h) ----
+// actualLoadKg = raw / cos(boom + phi) when enabled. CAL9 W<kg> captures the
+// same known mass at 2+ boom angles and fits phi and the scale together.
+// While enabled, CAL7 points are normalised to the square-to-rope frame too.
+static const uint8_t LOADANG_MAX_PTS = 6;
+static bool    _loadAngOn  = false;
+static float   _loadAngPhi = 0.0f;
+static float   _angCalBoom[LOADANG_MAX_PTS];
+static double  _angCalCounts[LOADANG_MAX_PTS];
+static float   _angCalKg[LOADANG_MAX_PTS];
+static uint8_t _angCalN = 0;
+static bool    _angCalPending = false;
+static float   _angCalPendingKg = 0.0f;
+static uint32_t _angCalStartMs = 0;
+
+// Smoothed corrected load (load_filter.h). Reset after a tare / scale change so it jumps to the new value.
+static LoadFilter _loadFilter;
+
+// ---- Bus task (HwBusTask, core 0): bus 0 MPU6050, bus 1 boom AS5600, bus 3 swing AS5600 ----
+// Bit-banged I2C busy-waits, so these three sensors are read on core 0 and only
+// their raw results are handed over here. Noise on the long boom-tip cable then
+// slows that task, never the telescope, load cell, FSRs or winch on core 1.
+// All encoder maths, calibration and saving stay in SensorTask (single owner).
 struct HwBusShared {
     uint32_t seq[2]   = {0, 0};      // [swing, boom]: bumped on every new raw sample
     uint16_t raw[2]   = {0, 0};
@@ -82,6 +100,9 @@ struct HwBusShared {
     float    imuBoom  = 0.0f;
     float    imuTilt  = 0.0f;
     bool     imuOK    = false;
+    float    accelPk  = 0.0f;        // m/s^2 beyond gravity, peak since SensorTask last took it
+    float    jerkPk   = 0.0f;        // m/s^3, same
+    uint32_t imuRejected = 0;        // corrupted IMU samples skipped since boot
     AS5600MagnetStatus mag[2] = {};
     bool     magNew[2] = {false, false};
     float    workMaxMs = 0.0f;       // worst hardware-bus cycle since the last DBG
@@ -130,7 +151,7 @@ static float   ropeValue()     { return _rope.ref + (float)(_rope.sign * ropeRaw
 static float   ropeExtShift(float extMm) { return isfinite(_rope.extRef) ? extMm - _rope.extRef : 0.0f; }
 
 // Loop stages timed for DBG (index into SensorDiag::stageMaxMs)
-enum { STAGE_IMUCAL, STAGE_ENC, STAGE_SAVE, STAGE_MAG, STAGE_CAL, STAGE_IMU, STAGE_HX, STAGE_COUNT };
+enum { STAGE_ENC, STAGE_SAVE, STAGE_MAG, STAGE_CAL, STAGE_IMU, STAGE_HX, STAGE_COUNT };
 static float _stageMax[STAGE_COUNT] = {0};
 static inline void stageEnd(int stage, uint32_t& t) {
     const uint32_t now = micros();
@@ -279,6 +300,9 @@ void sensorTask_loadCalibration() {
         }
     }
     bool hasTare = p.isKey("offset");
+    _loadAngPhi = p.getFloat("ang_phi", 0.0f);
+    _loadAngOn  = p.getBool("ang_on", false);
+    if (_loadAngOn) serialLine("  HX711: boom-angle correction ON, phi %.1f deg", _loadAngPhi);
     p.end();
 
     // If no saved tare exists and the load cell is connected, do a
@@ -451,16 +475,52 @@ static void runCal(const CalRequest& req) {
                 serialLine("$ACK,CAL7,SCALE_SET,SCALE:%.1f", req.value);
                 return;
             }
-            if (_loadCalPending || _loadCell->averageBusy() || _loadCell->tareBusy()) {
+            if (_loadCalPending || _angCalPending || _loadCell->averageBusy() || _loadCell->tareBusy()) {
                 serialLine("$ACK,CAL7,ERR,BUSY");
                 return;
             }
-            if (!(req.value > 0.0f && req.value <= MAX_VALID_LOAD_KG)) { serialLine("$ACK,CAL7,ERR,WEIGHT_RANGE"); return; }
+            if (!(req.value > 0.0f && req.value <= SLI_MAX_LOAD_KG)) { serialLine("$ACK,CAL7,ERR,WEIGHT_RANGE"); return; }
             _loadCell->startAverage(LOAD_CAL_SAMPLES);
             _loadCalPending   = true;
             _loadCalPendingKg = req.value;
             _loadCalStartMs   = millis();
             serialLine("$ACK,CAL7,MEASURING,KG:%.3f", req.value);
+            return;
+        }
+
+        case CAL_LOAD_ANGLE: {
+            if (req.axis == 1) {                          // CLEAR
+                _angCalN = 0;
+                serialLine("$ACK,CAL9,CLEARED");
+                return;
+            }
+            if (req.axis == 3) {                          // OFF
+                _loadAngOn = false;
+                _loadFilter.reset();
+                persist_setLoadAngle(_loadAngPhi, false);
+                serialLine("$ACK,CAL9,OFF (redo CAL7: the scale was fitted with the correction on)");
+                return;
+            }
+            if (req.axis == 2) {                          // manual phi, keeps the scale
+                if (!(fabsf(req.value) < LOADANG_PHI_LIMIT)) { serialLine("$ACK,CAL9,ERR,PHI_RANGE"); return; }
+                _loadAngPhi = req.value;
+                _loadAngOn  = true;
+                _loadFilter.reset();
+                persist_setLoadAngle(_loadAngPhi, true);
+                serialLine("$ACK,CAL9,ON,PHI:%.1f (scale kept: redo CAL7 or CAL9 W)", _loadAngPhi);
+                return;
+            }
+            if (!_loadCell || !_loadCell->isConnected()) { serialLine("$ACK,CAL9,ERR,HX711_NOT_FOUND"); return; }
+            if (_loadCalPending || _angCalPending || _loadCell->averageBusy() || _loadCell->tareBusy()) {
+                serialLine("$ACK,CAL9,ERR,BUSY");
+                return;
+            }
+            if (!(req.value > 0.0f && req.value <= SLI_MAX_LOAD_KG)) { serialLine("$ACK,CAL9,ERR,WEIGHT_RANGE"); return; }
+            _loadCell->startAverage(LOAD_CAL_SAMPLES);
+            _angCalPending   = true;
+            _angCalPendingKg = req.value;
+            _angCalStartMs   = millis();
+            serialLine("$ACK,CAL9,MEASURING,KG:%.3f", req.value);
             return;
         }
 
@@ -536,7 +596,7 @@ void sensorTask_hwBus(void* pvParameters) {
         }
         cycle++;
 
-        // MPU6050 on the boom (complementary filter inside the driver)
+        // MPU6050 on the boom (filter inside the driver, see imu_filter.h)
         if (_imu) _imu->update();
         const bool  imuOK    = _imu && _imu->isConnected();
         const float mpuRoll  = imuOK ? _imu->getRoll()  : 0.0f;
@@ -549,10 +609,15 @@ void sensorTask_hwBus(void* pvParameters) {
         const float imuTilt  = wrapDeg180(tiltBase - _tiltAngleOffset) * (_tiltInvert ? -1.0f : 1.0f);
 
         const float workMs = (micros() - t0) / 1000.0f;
+        const float accelDyn = imuOK ? _imu->getAccelDyn() : 0.0f;
+        const float jerk     = imuOK ? _imu->getJerk()     : 0.0f;
         taskENTER_CRITICAL(&_hwMux);
         _hw.imuBoom = imuBoom;
         _hw.imuTilt = imuTilt;
         _hw.imuOK   = imuOK;
+        if (accelDyn > _hw.accelPk) _hw.accelPk = accelDyn;
+        if (jerk     > _hw.jerkPk)  _hw.jerkPk  = jerk;
+        _hw.imuRejected = _imu ? _imu->rejectedSamples() : 0;
         if (workMs > _hw.workMaxMs) _hw.workMaxMs = workMs;
         taskEXIT_CRITICAL(&_hwMux);
 
@@ -576,7 +641,6 @@ void sensorTask(void* pvParameters) {
         prevStartUs = startUs;
 
         uint32_t st = startUs;
-        stageEnd(STAGE_IMUCAL, st);
 
         // ---- Snapshot of the hardware-I2C task's latest readings ----
         static uint32_t seenSeq[2] = {0, 0};
@@ -584,6 +648,7 @@ void sensorTask(void* pvParameters) {
         taskENTER_CRITICAL(&_hwMux);
         hw = _hw;
         _hw.magNew[0] = _hw.magNew[1] = false;
+        _hw.accelPk = _hw.jerkPk = 0.0f;   // peaks are handed on through SensorData
         taskEXIT_CRITICAL(&_hwMux);
 
         // ---- Encoders: swing / boom from the bus task, telescope read here ----
@@ -670,6 +735,7 @@ void sensorTask(void* pvParameters) {
                 _tarePending = false;
                 // Saved by StorageTask so it survives reboots
                 persist_setTareOffset(_loadCell->getOffset());
+                _loadFilter.reset();
                 serialLine("$ACK,CAL0,TARE_DONE");
             } else if (millis() - _tareStartMs > 3000) {
                 _tarePending = false;
@@ -684,6 +750,8 @@ void sensorTask(void* pvParameters) {
                 if (fabs(counts) < 1000.0) {
                     serialLine("$ACK,CAL7,ERR,NO_LOAD_SEEN (tare first, then hang the weight)");
                 } else {
+                    // With the correction on, the scale lives in the square-to-rope frame
+                    if (_loadAngOn) counts /= loadAngle_factor(boom, _loadAngPhi);
                     // Replace a point recorded with (nearly) the same weight, else append
                     uint8_t slot = _loadCalN;
                     for (uint8_t k = 0; k < _loadCalN; k++) {
@@ -706,6 +774,7 @@ void sensorTask(void* pvParameters) {
                         if (errG > worstG) worstG = errG;
                     }
                     _loadCell->setScale(scale);
+                    _loadFilter.reset();
                     _loadScaleCalibrated = true;
                     persist_setLoadScale(scale);
                     serialLine("$ACK,CAL7,OK,POINTS:%u,SCALE:%.1f,WORST_ERR_G:%.1f",
@@ -717,11 +786,75 @@ void sensorTask(void* pvParameters) {
             }
         }
 
+        if (_angCalPending && _loadCell) {
+            double counts;
+            if (_loadCell->takeAverageDone(&counts)) {
+                _angCalPending = false;
+                if (fabs(counts) < 1000.0) {
+                    serialLine("$ACK,CAL9,ERR,NO_LOAD_SEEN (tare first, then hang the weight)");
+                } else if (!(boomEncOK || imuOK)) {
+                    serialLine("$ACK,CAL9,ERR,NO_BOOM_ANGLE");
+                } else {
+                    // Same boom angle (within 1 deg) replaces that point, else append
+                    uint8_t slot = _angCalN;
+                    for (uint8_t k = 0; k < _angCalN; k++) {
+                        if (fabsf(_angCalBoom[k] - boom) < 1.0f) { slot = k; break; }
+                    }
+                    if (slot == _angCalN && _angCalN < LOADANG_MAX_PTS) _angCalN++;
+                    if (slot < LOADANG_MAX_PTS) {
+                        _angCalBoom[slot]   = boom;
+                        _angCalCounts[slot] = counts;
+                        _angCalKg[slot]     = _angCalPendingKg;
+                    }
+                    const LoadAngleFit fit = loadAngle_fit(_angCalBoom, _angCalCounts, _angCalKg, _angCalN);
+                    if (!fit.ok) {
+                        serialLine("$ACK,CAL9,POINT,N:%u,BOOM:%.1f (need 2+ points >= %.0f deg apart)",
+                                   _angCalN, boom, LOADANG_MIN_SPAN_DEG);
+                    } else {
+                        _loadCell->setScale(fit.countsPerKg);
+                        _loadFilter.reset();
+                        _loadScaleCalibrated = true;
+                        _loadAngPhi = fit.phiDeg;
+                        _loadAngOn  = true;
+                        persist_setLoadScale(fit.countsPerKg);
+                        persist_setLoadAngle(fit.phiDeg, true);
+                        serialLine("$ACK,CAL9,OK,N:%u,PHI:%.1f,SCALE:%.1f,WORST_ERR_G:%.1f",
+                                   _angCalN, fit.phiDeg, fit.countsPerKg, fit.worstErrG);
+                    }
+                }
+            } else if (millis() - _angCalStartMs > 5000) {
+                _angCalPending = false;
+                serialLine("$ACK,CAL9,ERR,TIMEOUT");
+            }
+        }
+
         stageEnd(STAGE_HX, st);
 
-        // ---- FSR outrigger sensors (raw ADC) ----
+        // ---- Fault-injection switch (test E6): log when it closes / opens ----
+        // A change is confirmed when the next cycle still reads it (switch bounce
+        // is a few ms); the event carries the time of the FIRST read (10 ms resolution).
+        {
+            static int8_t   fiState = -1;
+            static bool     fiPending = false;
+            static uint32_t fiEdgeMs = 0;
+            const int8_t closed = (digitalRead(FAULT_INJECT_PIN) == LOW) ? 1 : 0;
+            if (fiState < 0) {
+                fiState = closed;
+            } else if (closed == fiState) {
+                fiPending = false;
+            } else if (!fiPending) {
+                fiPending = true;
+                fiEdgeMs  = nowMs;
+            } else {
+                fiState   = closed;
+                fiPending = false;
+                serialLine("$EV,%lu,FI,%d", (unsigned long)fiEdgeMs, closed);
+            }
+        }
+
+        // ---- FSR outrigger sensors (ADC counts, oversampled + smoothed in FSRReader) ----
         uint16_t fsrVals[4] = {0, 0, 0, 0};
-        if (_fsr) _fsr->readAll(fsrVals);
+        if (_fsr) _fsr->readAll(fsrVals, SENSOR_PERIOD_MS / 1000.0f);
 
         // ---- N20 winch encoder (rope length) ----
         const float ropeLen = ropeValue();
@@ -732,7 +865,6 @@ void sensorTask(void* pvParameters) {
         if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             sensorData.swingAngle   = _axis[ENC_SWING].value();
             sensorData.boomAngle    = boom;
-            sensorData.teleAngle    = (float)_axis[ENC_TELE].countsFromReference() * 360.0f / EncoderAxis::COUNTS_PER_REV;
             sensorData.extensionMM  = _axis[ENC_TELE].value();
             // Total rope is fixed by the drum; the hanging part shrinks as the telescope extends
             const float ropeHang = ropeLen - ropeExtShift(sensorData.extensionMM);
@@ -741,10 +873,17 @@ void sensorTask(void* pvParameters) {
             sensorData.hookDropMM   = ropeHang + ROPE_KNOT_TO_HOOK_MM;
 
             sensorData.loadCellRaw  = weight;   // kg, uncorrected
-            sensorData.actualLoadKg = weight;   // Phase 3: will add angle compensation
+            // Boom-angle correction (load_angle.h), then adaptive smoothing (load_filter.h).
+            // getWeight() clamps at 0, so this stays >= 0. loadCellRaw stays raw for analysis.
+            const float corrected = _loadAngOn ? loadAngle_correct(weight, boom, _loadAngPhi) : weight;
+            sensorData.actualLoadKg = _loadFilter.update(corrected, periodMs / 1000.0f);
 
             sensorData.imuRoll  = imuBoom;      // IMU's view of the boom angle (cross-check)
             sensorData.imuPitch = imuTilt;      // sideways lean
+            // Peak-hold until SerialTxTask sends them, so 100 Hz shocks survive 50 Hz telemetry
+            if (hw.accelPk > sensorData.accelDynPk) sensorData.accelDynPk = hw.accelPk;
+            if (hw.jerkPk  > sensorData.jerkPk)     sensorData.jerkPk     = hw.jerkPk;
+            sensorData.imuRejected = hw.imuRejected;
 
             sensorData.fsr[0] = fsrVals[0];
             sensorData.fsr[1] = fsrVals[1];
@@ -761,7 +900,10 @@ void sensorTask(void* pvParameters) {
             if (_imu && !imuOK)                                     fault |= SENSOR_FAULT_IMU;
             // A dead HX711 never clears isConnected(): it just stops converting
             // and getWeight() keeps returning the last value. Stale = fault.
-            if (_loadCell && !(_loadCell->isConnected() && _loadCell->isFresh(LOAD_STALE_MS)))
+            // A broken load-cell WIRE keeps the HX711 converting: that is the
+            // health check (saturated / frozen / far negative), loadcell_health.h.
+            if (_loadCell && !(_loadCell->isConnected() && _loadCell->isFresh(LOAD_STALE_MS) &&
+                               _loadCell->health() == LC_HEALTH_OK))
                 fault |= SENSOR_FAULT_LOAD;
             sensorData.sensorFault = fault;
             sensorData.sensorsOK   = (fault == 0);
@@ -788,6 +930,10 @@ void sensorTask(void* pvParameters) {
             _diag.boomCalibrated  = _boomCalibrated;
             _diag.boomFromEncoder = boomEncOK;
             _diag.hx711Raw        = _loadCell ? _loadCell->getLastRaw() : 0;
+            _diag.loadHealth      = _loadCell ? (uint8_t)_loadCell->health() : 0;
+            _diag.loadNoise       = _loadCell ? _loadCell->noiseSpan() : -1;
+            _diag.loadFresh       = _loadCell && _loadCell->isFresh(LOAD_STALE_MS);
+            _diag.loadOffset      = _loadCell ? _loadCell->getOffset() : 0;
             _diag.loadScale       = _loadCell ? _loadCell->getScale() : 0.0f;
             _diag.loadPoints      = _loadCalN;
             _diag.loadScaleCalibrated = _loadScaleCalibrated;
@@ -802,7 +948,8 @@ void sensorTask(void* pvParameters) {
             if (hw.workMaxMs > _stageMax[STAGE_IMU]) _stageMax[STAGE_IMU] = hw.workMaxMs;   // "hwbus" in DBG
             for (int k = 0; k < STAGE_COUNT; k++) _diag.stageMaxMs[k] = _stageMax[k];
             _diag.imuReconnects = _imu ? _imu->reconnects() : 0;
-            _diag.imuRejected   = _imu ? _imu->rejectedSamples() : 0;
+            _diag.imuRejected   = hw.imuRejected;
+            _diag.imuAccelScale = _imu ? _imu->accelScale() : 0.0f;
 
             xSemaphoreGive(sensorMutex);
         }

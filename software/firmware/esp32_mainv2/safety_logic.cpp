@@ -28,6 +28,12 @@ static SliState nextState(SliState prev, float pct, float warn, float cut) {
     return SLI_OK;
 }
 
+uint8_t sli_travelLimits(const SafetyInputs& in) {
+    uint8_t m = 0;
+    if (isfinite(in.boomDeg) && in.boomDeg <= SLI_BOOM_MIN_DEG) m |= sli_bit(2, 0);   // boom down
+    return m;
+}
+
 SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliState prev) {
     SafetyResult r;
     r.state   = SLI_FAULT;
@@ -47,6 +53,7 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
         // Everything except the motions that always reduce the load moment
         r.blocked = (uint8_t)~(sli_bit(2, 1) | sli_bit(3, 0) | sli_bit(4, 1 - SLI_WINCH_HOIST_DIR));
         if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
+        r.blocked |= sli_travelLimits(in);
         return r;
     }
 
@@ -55,23 +62,39 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
     r.state = nextState(prev, r.pct, c.warnPct, c.cutPct);
     if (!(r.capKg > 0.0f)) r.reason = SLI_WHY_OUTSIDE;
 
-    // Geometric axes: check one step ahead in each direction
-    const float swingStep = SLI_LOOK_SWING_DEG * (float)SLI_SWING_D1_SIGN;
+    // Geometric axes: check one step ahead in each direction.
+    // D1 = +step on every axis (for swing, D1 moves the angle by SLI_SWING_D1_SIGN).
+    const float baseStep[3] = { SLI_LOOK_SWING_DEG, SLI_LOOK_BOOM_DEG, SLI_LOOK_EXT_MM };
+    const float rateD1[3]   = { in.swingRate * (float)SLI_SWING_D1_SIGN, in.boomRate, in.extRate };
     for (uint8_t dir = 0; dir <= 1; dir++) {
-        const float s = dir ? 1.0f : -1.0f;   // D1 = +step on every axis (swing sign above)
-        const float ahead[3] = {
-            pctAt(c, in.loadKg, in.boomDeg, in.extMm, in.swingDeg + s * swingStep, nullptr, nullptr),
-            pctAt(c, in.loadKg, in.boomDeg + s * SLI_LOOK_BOOM_DEG, in.extMm, in.swingDeg, nullptr, nullptr),
-            pctAt(c, in.loadKg, in.boomDeg, in.extMm + s * SLI_LOOK_EXT_MM, in.swingDeg, nullptr, nullptr),
-        };
+        const float s = dir ? 1.0f : -1.0f;
+        float step[3];
         for (uint8_t a = 0; a < 3; a++) {
-            if (ahead[a] >= c.cutPct && ahead[a] >= r.pct) r.blocked |= sli_bit((uint8_t)(a + 1), dir);
+            step[a] = baseStep[a];
+            const float towards = s * rateD1[a];          // speed in THIS direction (> 0 = moving that way)
+            if (in.cutMode == SLI_CUT_SPEED && isfinite(towards) && towards * SLI_LOOK_TIME_S > step[a]) {
+                step[a] = towards * SLI_LOOK_TIME_S;
+            }
+        }
+        const float swingDelta = s * step[0] * (float)SLI_SWING_D1_SIGN;
+        const float ahead[3] = {
+            pctAt(c, in.loadKg, in.boomDeg, in.extMm, in.swingDeg + swingDelta, nullptr, nullptr),
+            pctAt(c, in.loadKg, in.boomDeg + s * step[1], in.extMm, in.swingDeg, nullptr, nullptr),
+            pctAt(c, in.loadKg, in.boomDeg, in.extMm + s * step[2], in.swingDeg, nullptr, nullptr),
+        };
+        // REACTIVE waits until the limit is already reached; the others cut the
+        // step that would reach it. Either way only a step that doesn't lower the % is cut.
+        const float trigger = (in.cutMode == SLI_CUT_REACTIVE) ? r.pct : 0.0f;
+        for (uint8_t a = 0; a < 3; a++) {
+            const float judged = (in.cutMode == SLI_CUT_REACTIVE) ? trigger : ahead[a];
+            if (judged >= c.cutPct && ahead[a] >= r.pct) r.blocked |= sli_bit((uint8_t)(a + 1), dir);
         }
     }
 
     // Hoisting can only add load: cut it while overloaded
     if (r.state == SLI_CUT) r.blocked |= sli_bit(4, SLI_WINCH_HOIST_DIR);
     if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
+    r.blocked |= sli_travelLimits(in);
     if (r.pct > SLI_PCT_MAX) r.pct = SLI_PCT_MAX;   // the distance term is internal only
     return r;
 }
@@ -82,6 +105,14 @@ const char* sli_stateName(SliState s) {
         case SLI_WARN:  return "WARN";
         case SLI_CUT:   return "CUT";
         default:        return "FAULT";
+    }
+}
+
+char sli_cutModeLetter(SliCutMode m) {
+    switch (m) {
+        case SLI_CUT_REACTIVE: return 'R';
+        case SLI_CUT_SPEED:    return 'S';
+        default:               return 'P';
     }
 }
 

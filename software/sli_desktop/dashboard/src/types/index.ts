@@ -8,12 +8,20 @@ export interface TelemetryFrame {
   ropeLength: number;   // calibrated: load-cell end to the knot
   ropeTotal: number;    // ropeLength + fixed path + knot-to-hook (0 = old firmware)
   hookDrop: number;     // load-cell end to hook tip (0 = old firmware)
-  fsr: [number, number, number, number];
+  fsr: [number, number, number, number];   // ADC counts, 0-4095 = 0-3.3 V (smoothed on the ESP32)
   imuRoll: number;
   imuPitch: number;
   safeLoadLimit: number;
   loadPercent: number;
   alarmLevel: 0 | 1 | 2 | 3; // 0=OK, 1=WARN, 2=CRITICAL, 3=ESTOP
+  // Boom-tip IMU, peaks since the previous frame (0 with firmware before 2026-11-07)
+  accelDyn?: number;   // m/s² beyond gravity
+  jerk?: number;       // m/s³
+  // Dashboard-side (useTelemetry, components/telemetry/shock.ts): idle noise removed
+  accelShock?: number; // m/s² above the idle level, 0 at rest
+  jerkShock?: number;  // m/s³ above the idle level
+  accelPeak?: number;  // accelShock, peak of the last 2 s (readable number for the tile)
+  imuRejected?: number;
   timestamp: number;
   // Tipping margin from the FSRs (backend, warn only)
   tipValid?: boolean;
@@ -21,6 +29,8 @@ export interface TelemetryFrame {
   copX?: number | null;
   copY?: number | null;
   tipWarn?: boolean;
+  fsrShare?: number[] | null;   // each pad's share of the total pad force (0-1)
+  padKg?: number[] | null;      // approx kg on each pad (null until the crane weight is set)
 }
 
 /** One live sample kept for the rolling charts (Data Logger, last 60 s). */
@@ -29,12 +39,21 @@ export interface LivePoint {
   ts: number;         // unix s
   load: number;
   cap: number;
-  pct: number;
+  pct: number | null;   // null outside the chart (the ESP32 reports 999 %)
   boom: number;
   swing: number;
   ext: number;
   hookDrop: number;
   tip: number | null;
+  accel: number;      // m/s² above the idle level (shock filter, 0 at rest)
+  jerk: number;       // m/s³ above the idle level
+}
+
+/** 5-minute capture for the live charts: points with t = seconds since start. */
+export interface Capture {
+  active: boolean;
+  t0: number;          // unix s at start
+  points: LivePoint[];
 }
 
 /** Swing input shaping state ($SHP from the ESP32). */
@@ -55,6 +74,7 @@ export interface LiftState {
 
 export interface LiftSummary {
   id: string;
+  name: string;              // set with Rename in the Data tab ("" = not named yet)
   operator: string | null;
   note: string;
   startedAt: string | null;
@@ -62,7 +82,6 @@ export interface LiftSummary {
   liftedKg: number | null;
   score: number | null;
   grade: string | null;
-  cost: number | null;
   ok: boolean;
 }
 
@@ -82,6 +101,8 @@ export interface LiftRow {
   tipMargin: number | null;
   m1: number; m2: number; m3: number; m4: number;
   shaping: number | null;
+  accelDyn?: number | null;
+  jerk?: number | null;
 }
 
 export interface LiftPhase { name: string; t0: number; t1: number; }
@@ -108,12 +129,12 @@ export interface LiftReport {
                 meanRippleG: number; swingStopRippleG: number | null;
                 stops: { t: number; axis: string; rippleG: number; shaped: boolean }[] };
   efficiency: { idleS: number; idleFrac: number };
+  dynamics?: { peakAccel: number | null; peakJerk: number | null;
+               shocks: { t: number; accel: number; jerk: number; cause: string }[] };
   penalty: { points: number; items: { what: string; value: number; points: number }[] };
   score: { total: number; grade: string; safety: number; smoothness: number; efficiency: number;
            max: { safety: number; smoothness: number; efficiency: number };
            parts: Record<string, number> };
-  cost: { currency: string; time: number; load: number; penalty: number; total: number;
-          rates: { perMin: number; perKg: number; perPenaltyPoint: number } };
   flags: LiftFlag[];
 }
 
@@ -129,14 +150,6 @@ export interface DebugReport {
 
 export type AlarmLevel = 0 | 1 | 2 | 3;
 
-/** CSV recording state from the backend (off until the REC button is pressed). */
-export interface RecordingState {
-  recording: boolean;
-  file: string | null;
-  rows: number;
-  elapsedSec: number;
-}
-
 /** $S from the ESP32: the SLI state (5 Hz + on every change). */
 export type SliState = "OK" | "WARN" | "CUT" | "FAULT" | "ESTOP";
 export interface SafetyStatus {
@@ -149,6 +162,8 @@ export interface SafetyStatus {
   chart: string;         // active chart name on the ESP32, "NONE" if none
   mode: "ARMED" | "BYPASS" | "OFF";   // state + blocked are enforced only when ARMED
   why?: string;          // - | NO_CHART | SENSOR:IMU+LOAD.. | LOAD_RANGE | BAD_VALUE | OUTSIDE
+  cutMode?: "P" | "R" | "S";   // predictive / reactive / speed-aware (test E5)
+  drvIdle?: boolean | null;    // Mega releases idle drivers (null = older firmware)
   timestamp: number;     // 0 = nothing received yet
 }
 

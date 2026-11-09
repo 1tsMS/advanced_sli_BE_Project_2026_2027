@@ -1,6 +1,6 @@
 {
   "name": "Lift limit STD",
-  "description": "85 % of Lift limit (working profile)",
+  "description": "85 % of Lift limit (working profile) Extensions rebased to retracted = 0 mm (2026-11-09).",
   "anglesDeg": [
     0.0,
     10.0,
@@ -10,9 +10,9 @@
     50.0
   ],
   "extensionsMM": [
-    22.4,
-    45.0,
-    67.4
+    0.0,
+    22.6,
+    45.0
   ],
   "capacityKg": [
     [

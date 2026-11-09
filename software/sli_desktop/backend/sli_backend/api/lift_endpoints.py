@@ -1,5 +1,5 @@
 """
-REST routes for lifts (record / analyse / report), operators, score + cost
+REST routes for lifts (record / analyse / report), operators, score
 settings, tipping geometry and swing input shaping.
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from ..api.models import LiftStartRequest, OperatorRequest, ShapingRequest, TippingSettings, ApiResponse
+from ..api.models import LiftStartRequest, LiftRenameRequest, OperatorRequest, ShapingRequest, TippingSettings, ApiResponse
 from ..core import lift_analysis, tipping
 from ..core.lift_recorder import LiftRecorder
 
@@ -73,12 +73,27 @@ async def lift_series(lift_id: str, n: int = 1500):
     for r in rows:
         r["load"] = r.get("load") or 0.0
     n = max(50, min(n, 20000))
-    return {"rows": lift_analysis.downsample(rows, n), "total": len(rows)}
+    ds = lift_analysis.downsample(rows, n)
+    # LTTB keeps the shape of the LOAD trace; boom-tip shocks are short spikes in
+    # another column, so their rows are added back to keep them on the chart
+    vals = sorted(r["accelDyn"] for r in rows if r.get("accelDyn") is not None)
+    thr = _rec().settings().shockAccel + (vals[len(vals) // 2] if vals else 0.0)   # above the idle median
+    kept = {id(r) for r in ds}
+    shocks = [r for r in rows if (r.get("accelDyn") or 0.0) >= thr and id(r) not in kept]
+    return {"rows": sorted(ds + shocks, key=lambda r: r["t"]), "total": len(rows)}
 
 
 @router.post("/lifts/{lift_id}/reanalyse")
 async def lift_reanalyse(lift_id: str):
     r = _rec().reanalyse(lift_id)
+    if r is None:
+        raise HTTPException(404, "Lift not found")
+    return r
+
+
+@router.patch("/lifts/{lift_id}")
+async def lift_rename(lift_id: str, req: LiftRenameRequest):
+    r = _rec().rename(lift_id, req.name, req.note)
     if r is None:
         raise HTTPException(404, "Lift not found")
     return r
@@ -107,7 +122,7 @@ async def add_operator(req: OperatorRequest):
         raise HTTPException(400, str(e))
 
 
-# ---------------- score / cost settings ----------------
+# ---------------- score settings ----------------
 @router.get("/lift/settings")
 async def lift_settings():
     return asdict(_rec().settings())

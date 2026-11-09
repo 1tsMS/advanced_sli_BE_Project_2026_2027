@@ -47,6 +47,7 @@ class TippingConfig:
     minTotal: float = 0.05     # sum of conductance units below this = pads not loaded / FSRs off
     warnPct: float = 30.0      # margin below this = tipping warning
     calibrated: bool = False
+    craneKg: float = 0.0       # whole crane on its pads, weighed once (0 = unknown: no kg per pad)
 
 
 def fsr_force(adc: int) -> float:
@@ -68,6 +69,16 @@ def _edge_distances(p: tuple[float, float], poly: Sequence[Sequence[float]]) -> 
         length = math.hypot(ex, ey) or 1e-9
         out.append(sign * (ex * (p[1] - ay) - ey * (p[0] - ax)) / length)
     return out
+
+
+def pad_kg(shares: Sequence[float], crane_kg: float, hook_kg: float) -> Optional[list[float]]:
+    """Approximate weight on each pad: its share of the pad force x everything the pads
+    carry (crane + hook load). An estimate: it trusts the FSR gains (calibrated at rest)
+    and that an FSR's conductance is proportional to force."""
+    if crane_kg <= 0:
+        return None
+    total = crane_kg + max(0.0, hook_kg)
+    return [round(s * total, 3) for s in shares]
 
 
 def compute(fsr: Sequence[int], cfg: TippingConfig) -> dict:
@@ -107,10 +118,12 @@ class TippingStore:
         self.recent: deque = deque(maxlen=100)     # last ~2 s of raw FSR frames (calibration)
         self._load()
 
-    def update(self, fsr: Sequence[int]) -> dict:
-        """One telemetry frame in, its tipping result out."""
+    def update(self, fsr: Sequence[int], hook_kg: float = 0.0) -> dict:
+        """One telemetry frame in, its tipping result out (+ padKg when the crane weight is known)."""
         self.recent.append(list(fsr))
-        return compute(fsr, self.cfg)
+        out = compute(fsr, self.cfg)
+        out["padKg"] = pad_kg(out["shares"], self.cfg.craneKg, hook_kg) if out["valid"] else None
+        return out
 
     def _load(self) -> None:
         try:

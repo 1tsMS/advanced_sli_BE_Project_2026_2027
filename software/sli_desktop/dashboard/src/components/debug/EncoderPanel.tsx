@@ -2,8 +2,9 @@ import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import type { DebugReport, TelemetryFrame } from "../../types";
 import { ENCODER_AXES, encoderDiag, type EncoderAxisId } from "./encoderDiag";
+import { API_BASE } from "../../api";
+import { TELE_RETRACTED_MM } from "../../geometry";
 
-const API_BASE = "http://localhost:8000/api";
 
 interface EncoderPanelProps {
   frame: TelemetryFrame | null | undefined;
@@ -34,7 +35,9 @@ function liveValue(id: EncoderAxisId, f: TelemetryFrame | null | undefined): num
  */
 export function EncoderPanel({ frame, debugReport, onScan, onLog }: EncoderPanelProps) {
   // Typed "current position" per axis; empty means 0
-  const [refInput, setRefInput] = useState<Record<EncoderAxisId, string>>({ swing: "0", boom: "0", tele: "0", rope: "0" });
+  // Same references as the Calibrate steps: swing home 0°, boom rest 0°, telescope retracted, hook fully up 0 mm
+  const [refInput, setRefInput] = useState<Record<EncoderAxisId, string>>(
+    { swing: "0", boom: "0", tele: String(TELE_RETRACTED_MM), rope: "0" });
   const [busy, setBusy] = useState<EncoderAxisId | null>(null);
 
   const send = async (axis: EncoderAxisId, body: { value?: number; invert?: boolean }) => {
@@ -58,14 +61,14 @@ export function EncoderPanel({ frame, debugReport, onScan, onLog }: EncoderPanel
   };
 
   return (
-    <div className="debug-card enc-card">
-      <div className="debug-card-header">
-        <span className="debug-card-title">Encoders</span>
-        <button className="btn-ghost enc-refresh" onClick={onScan} title="Re-read diagnostics from the ESP32 (DBG)">
+    <div className="panel enc-card">
+      <div className="panel-header">
+        <span className="ph-title">Encoders</span>
+        <button className="btn-ghost btn-sm" onClick={onScan} title="Re-read diagnostics from the ESP32 (DBG)">
           <RefreshCw size={10} /> Refresh
         </button>
       </div>
-      <div className="debug-card-body enc-body">
+      <div className="panel-body enc-body">
         {!debugReport && (
           <div className="enc-empty">Press Refresh to read magnet health and the stored calibration.</div>
         )}

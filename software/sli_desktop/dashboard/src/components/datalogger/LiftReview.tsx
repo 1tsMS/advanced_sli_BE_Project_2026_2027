@@ -5,9 +5,9 @@ import {
 } from "recharts";
 import { FileDown } from "lucide-react";
 import type { LiftReport, LiftRow, LiftPhase } from "../../types";
-import { C, AXIS_TICK, ChartCard, TipBox, PHASE_COLOR, fmtS } from "./chartKit";
+import { C, AXIS_TICK, ChartCard, ChartGrid, TipBox, PHASE_COLOR, fmtS } from "./chartKit";
+import { API_BASE } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 const SERIES_POINTS = 1500;
 
 type StateFilter = "all" | "alarm";
@@ -85,6 +85,8 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
   const phases = report?.ok ? report.phases : [];
   const xDomain: [number, number] = range ?? [0, duration];
   const hasTip = !!rows?.some(r => r.tipValid);
+  const hasAccel = !!rows?.some(r => r.accelDyn !== undefined && r.accelDyn !== null);
+  const shocks = report?.ok ? (report.dynamics?.shocks ?? []) : [];
   const warnPct = 90, cutPct = 100;
 
   const pickPhase = (name: string) => {
@@ -144,7 +146,7 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
 
       {phases.length > 0 && <PhaseBar phases={phases} duration={duration} range={range ?? undefined} />}
 
-      <ChartCard title="Load (drag the handles to zoom every chart)" height={150} exportable={false}>
+      <ChartCard title="Load (drag the handles to zoom every chart)" height={150} exportable={false} className="dl-zoom">
         <ResponsiveContainer>
           <LineChart data={rows} margin={margin}>
             <CartesianGrid stroke={C.grid} vertical={false} />
@@ -162,7 +164,7 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
         </ResponsiveContainer>
       </ChartCard>
 
-      <div className="dl-grid">
+      <ChartGrid>
         <ChartCard title="Load vs rated capacity" height={220}
                    legend={[{ label: "Load", color: C.s1 }, { label: "Rated capacity", color: C.ref, dashed: true },
                             { label: "WARN / CUT", color: C.warn, band: true }]}>
@@ -174,7 +176,7 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
               {bands}
               {report?.ok && report.pickups.map((p, i) => (
                 <ReferenceLine key={i} x={p.t} stroke={p.snatch ? C.crit : C.ref} strokeDasharray="2 3"
-                               label={{ value: `DAF ${p.daf.toFixed(2)}`, fill: C.axis, fontSize: 10, position: "insideTopRight" }} />
+                               label={{ value: `DAF ${p.daf.toFixed(2)}`, fill: C.axis, fontSize: "var(--fs-xs)", position: "insideTopRight" }} />
               ))}
               <Tooltip content={<TipBox unit={{ Load: " kg", "Rated capacity": " kg" }} />} isAnimationActive={false} />
               <Line dataKey="capKg" name="Rated capacity" stroke={C.ref} strokeDasharray="5 4" strokeWidth={1.5} dot={false} isAnimationActive={false} />
@@ -241,6 +243,25 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
           </ResponsiveContainer>
         </ChartCard>
 
+        <ChartCard title="Boom-tip acceleration (shocks marked)" height={200}>
+          {hasAccel ? (
+            <ResponsiveContainer>
+              <LineChart data={view} margin={margin} syncId="lift">
+                <CartesianGrid stroke={C.grid} vertical={false} />
+                {X}
+                {bands}
+                <YAxis tick={AXIS_TICK} stroke={C.grid} unit=" m/s²" width={64} domain={[0, "auto"]} />
+                {shocks.map((s, i) => (
+                  <ReferenceLine key={i} x={s.t} stroke={C.crit} strokeDasharray="2 3"
+                                 label={{ value: s.cause, fill: C.axis, fontSize: "var(--fs-xs)", position: "insideTopRight" }} />
+                ))}
+                <Tooltip content={<TipBox unit={{ "Acceleration beyond gravity": " m/s²" }} />} isAnimationActive={false} />
+                <Line dataKey="accelDyn" name="Acceleration beyond gravity" stroke={C.s1} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : <div className="dl-empty small">Recorded before the boom-tip acceleration was logged.</div>}
+        </ChartCard>
+
         <ChartCard title="Tipping margin" height={190}>
           {hasTip ? (
             <ResponsiveContainer>
@@ -272,7 +293,7 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
 
         {report?.ok && (
           <div className="dl-card">
-            <div className="dl-card-head"><span className="dl-card-title">Pick-ups and stops</span></div>
+            <div className="dl-card-head"><span className="dl-card-title">Pick-ups, stops and shocks</span></div>
             <table className="dl-table">
               <thead><tr><th>t</th><th>Event</th><th>Value</th></tr></thead>
               <tbody>
@@ -281,17 +302,19 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
                                                 val: `DAF ${p.daf.toFixed(2)}${p.snatch ? " (snatch)" : ""}` })),
                   ...report.smoothness.stops.map(s => ({ t: s.t, bad: false, what: `${s.axis} stop${s.shaped ? " (shaped)" : ""}`,
                                                          val: `ripple ${s.rippleG.toFixed(1)} g` })),
+                  ...shocks.map(s => ({ t: s.t, bad: false, what: `Shock: ${s.cause}`,
+                                        val: `${s.accel.toFixed(1)} m/s², jerk ${s.jerk.toFixed(0)} m/s³` })),
                 ].sort((a, b) => a.t - b.t).map((e, i) => (
                   <tr key={i} className={e.bad ? "bad" : ""}><td>{fmtS(e.t)}</td><td>{e.what}</td><td>{e.val}</td></tr>
                 ))}
-                {!report.pickups.length && !report.smoothness.stops.length && (
+                {!report.pickups.length && !report.smoothness.stops.length && !shocks.length && (
                   <tr><td colSpan={3} className="dl-muted">No pick-ups or loaded stops.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
         )}
-      </div>
+      </ChartGrid>
     </div>
   );
 }

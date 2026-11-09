@@ -4,7 +4,7 @@
 //    esp32_mainv2/shaper_math.h  (T/2 from the pendulum length)
 //
 //  Build + run from software/firmware:
-//    g++ -std=c++17 -Wall -Wextra -I mega_executor -I esp32_mainv2 host_tests/test_shaper.cpp -o host_tests/test_shaper && host_tests/test_shaper
+//    g++ -std=c++17 -Wall -Wextra -I mega_executor -I esp32_mainv2 -I host_tests host_tests/test_shaper.cpp -o host_tests/test_shaper && host_tests/test_shaper
 // ============================================================
 #include "zv_shaper.h"
 #include "shaper_math.h"
@@ -12,18 +12,7 @@
 #include <cstdio>
 #include <initializer_list>
 
-static int g_pass = 0, g_fail = 0;
-
-#define CHECK(cond) do { \
-    if (cond) g_pass++; \
-    else { g_fail++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } \
-} while (0)
-
-#define CHECK_NEAR(a, b, tol) do { \
-    const double _a = (a), _b = (b); \
-    if (std::fabs(_a - _b) <= (tol)) g_pass++; \
-    else { g_fail++; std::printf("FAIL %s:%d  %s = %.4f, expected %.4f\n", __FILE__, __LINE__, #a, _a, _b); } \
-} while (0)
+#include "check.h"
 
 static void test_half_period() {
     // T/2 = pi sqrt(L/g): 150 mm -> 389 ms, 400 mm -> 634 ms
@@ -122,6 +111,5 @@ int main() {
     test_reversal();
     test_reset_and_overflow();
     test_pendulum_sim();
-    std::printf("%d passed, %d failed\n", g_pass, g_fail);
-    return g_fail ? 1 : 0;
+    return check_summary("shaper");
 }

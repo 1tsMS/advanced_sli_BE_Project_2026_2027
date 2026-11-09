@@ -13,6 +13,13 @@
 //      (whatever shape the chart has, including swing zones)
 //    - a motion is cut one step BEFORE it reaches 100 % (predictive cut)
 //    - the chart edges are soft travel limits (capacity 0 outside the chart)
+//  Cut modes (SLI CUT P|R|S, for the predictive-vs-reactive experiment; every
+//  boot starts in PREDICTIVE):
+//    PREDICTIVE  fixed look-ahead step per axis (SLI_LOOK_*)
+//    REACTIVE    no look-ahead: a direction is cut only once the load % is
+//                already at or above the cut threshold (classic limiter)
+//    SPEED       look-ahead = max(fixed step, axis speed x SLI_LOOK_TIME_S):
+//                a fast axis is stopped earlier, so it lands before the limit
 //  Hoisting (winch up) is the one motion the geometry can't predict: it is cut
 //  while the state is CUT.
 //
@@ -47,12 +54,29 @@ enum SliState : uint8_t {
 // bottom: a limit switch has to. Set to 0 to cut boom down like every other move.
 #define SLI_BOOM_DOWN_ALWAYS 1
 
+// ---- Travel limits: mechanical end stops, enforced in EVERY mode ----
+// Not a load limit, so BYPASS and OFF don't lift it (only E-stop rules above it).
+// Boom down below this angle drives the leadscrew T-nut into the coupling: the
+// boom rests on its stop at 0° (IMU zeroed there), so -0.5° = "already on the
+// stop". A microswitch is still the real fix; this is the software guard.
+#define SLI_BOOM_MIN_DEG   -0.5f
+
 // ---- Look-ahead step per axis (how far ahead a motion is checked) ----
 // At dashboard speeds the axes move well under these in the ~30 ms it takes
 // the cut to reach the motor, so the cut lands before the limit.
 #define SLI_LOOK_BOOM_DEG   1.0f
 #define SLI_LOOK_EXT_MM     2.0f
 #define SLI_LOOK_SWING_DEG  3.0f
+// SPEED mode: distance covered in this time is looked ahead. It covers the cut
+// path (SafetyTask period 20 ms + command + UART + Mega, ~30 ms) and the IMU
+// filter lag on the boom angle; tune it from the E5 overshoot data.
+#define SLI_LOOK_TIME_S     0.25f
+
+enum SliCutMode : uint8_t {
+    SLI_CUT_PREDICTIVE = 0,
+    SLI_CUT_REACTIVE   = 1,
+    SLI_CUT_SPEED      = 2
+};
 
 #define SLI_HYST_PCT        2.0f     // state hysteresis (WARN/CUT clear this far below)
 #define SLI_PCT_MAX         999.0f   // shown for "outside the chart" (capacity 0)
@@ -64,6 +88,12 @@ struct SafetyInputs {
     float swingDeg;
     float loadKg;
     bool  sensorsOK;
+    // Measured axis speeds (deg/s, mm/s, deg/s; + = angle / extension rising).
+    // Only SPEED mode uses them; 0 = standing still or unknown.
+    float boomRate;
+    float extRate;
+    float swingRate;
+    SliCutMode cutMode;
 };
 
 /** Why motions are cut (beyond the normal load % look-ahead). */
@@ -90,6 +120,9 @@ inline uint8_t sli_bit(uint8_t axis, uint8_t dir) {
     return (uint8_t)(1u << (((axis - 1u) & 3u) * 2u + (dir & 1u)));
 }
 
+/** Motions past a mechanical end stop (bits as in SafetyResult::blocked). Any mode. */
+uint8_t sli_travelLimits(const SafetyInputs& in);
+
 /**
  * One evaluation. chart = nullptr when no valid chart is loaded.
  * prev = the state returned last time (for hysteresis).
@@ -98,5 +131,7 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
 
 const char* sli_stateName(SliState s);
 const char* sli_reasonName(SliReason r);
+/** "P" / "R" / "S" for the $S line and the SLI CUT command. */
+char sli_cutModeLetter(SliCutMode m);
 
 #endif // SAFETY_LOGIC_H

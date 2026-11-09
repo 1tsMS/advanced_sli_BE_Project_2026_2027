@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Play, Square } from "lucide-react";
 import type { LiftState } from "../../types";
+import { API_BASE } from "../../api";
 
-const API_BASE = "http://localhost:8000/api";
 const ADD = "__add__";
 const LAST_OP_KEY = "sli.lastOperator";
 
@@ -103,7 +103,7 @@ export function LiftControl({ onStopped }: { onStopped: (id: string) => void }) 
 
   return (
     <div className="lift-ctl">
-      {error && <span className="rec-err" role="alert">{error}</span>}
+      {error && <span className="inline-err" role="alert">{error}</span>}
       {active ? (
         <span className="lift-op-live" title="Operator of the running lift">{state!.operator}</span>
       ) : adding ? (

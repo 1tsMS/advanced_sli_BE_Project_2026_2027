@@ -58,9 +58,14 @@ struct SensorDiag {
     uint8_t loadPoints;             // calibration weights recorded this session
     bool    loadScaleCalibrated;    // false = still the config.h default
     // Worst time per loop stage since the last DBG (ms): finds what stalls the loop
-    float   stageMaxMs[7];          // see STAGE_* in sensor_task.cpp
+    float   stageMaxMs[6];          // see STAGE_* in sensor_task.cpp
     uint32_t imuReconnects;         // IMU fast re-inits after dropouts
     uint32_t imuRejected;           // implausible (corrupted) IMU samples skipped
+    float    imuAccelScale;         // accel scale from the last IMU calibration
+    uint8_t  loadHealth;            // LoadCellHealth (loadcell_health.h)
+    int32_t  loadNoise;             // raw-count span over ~3 s (-1 = not measured yet)
+    bool     loadFresh;             // a conversion arrived in the last 500 ms
+    int32_t  loadOffset;            // tare offset (raw counts at zero load)
 };
 
 /**

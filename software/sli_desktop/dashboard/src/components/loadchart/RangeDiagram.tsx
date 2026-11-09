@@ -219,7 +219,7 @@ export function RangeDiagram({ profile, boomBaseMm, live, liveState }: RangeDiag
         </span>
         <span className="lc-legend-v">{Number.isFinite(capMax) ? capMax.toFixed(2) : "–"} kg</span>
         <span className="lc-legend-k" style={{ marginLeft: "auto" }}>blank = outside chart (cut)</span>
-        <button className="btn-ghost" style={{ padding: "1px 8px", fontSize: 10 }} onClick={() => setFit(f => !f)}
+        <button className="btn-ghost" style={{ padding: "1px 8px", fontSize: "var(--fs-xs)" }} onClick={() => setFit(f => !f)}
                 title={fit ? "Show the whole crane from the pivot" : "Zoom to the chart envelope"}>
           {fit ? "Whole crane" : "Fit chart"}
         </button>

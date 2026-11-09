@@ -10,7 +10,7 @@
 //  it asks safety_motionAllowed() before forwarding a motion, and when the
 //  mask gains a bit SafetyTask wakes it to stop any axis already moving in a
 //  now-blocked direction. Worst case from "limit reached" to "M0 sent" is one
-//  SafetyTask period (20 ms) plus the UART line to the Mega (~10 ms).
+//  SafetyTask period (20 ms) plus the UART line to the Mega (~1.2 ms at 57600).
 //
 //  Also owned here:
 //    - E-stop latch: T0 latches, every motion is refused until RST
@@ -18,13 +18,16 @@
 //      E-stop or dead-man; it lapses by itself and on every reboot
 //    - The active load chart (RAM copy + flash via StorageTask)
 //
-//  Status line:  $S,<OK|WARN|CUT|FAULT|ESTOP>,<pct>,<capKg>,<zone>,<bypassLeftS>,<blockedHex>,<chart>,<ARMED|BYPASS|OFF>
+//  Status line:  $S,<OK|WARN|CUT|FAULT|ESTOP>,<pct>,<capKg>,<zone>,<bypassLeftS>,<blockedHex>,<chart>,
+//                  <ARMED|BYPASS|OFF>,<why>,<cut mode P|R|S>,<driver idle release 0|1>
 //  (state + blocked mask are always computed; the mode says whether they are enforced)
+//  Event line on every state change: $EV,<ms>,SLI,<state>,<pct> (firmware clock, for latencies)
 // ============================================================
 #ifndef SAFETY_TASK_H
 #define SAFETY_TASK_H
 
 #include <Arduino.h>
+#include "safety_logic.h"
 
 #define SAFETY_BYPASS_MAX_S  600
 
@@ -37,7 +40,6 @@ void safetyTask(void* pvParameters);
 bool safety_motionAllowed(uint8_t axis, uint8_t dir, const char** reason);
 
 void safety_estop();               // latch
-bool safety_estopLatched();
 void safety_reset();               // clear the latch (RST)
 
 void safety_bypass(uint16_t seconds);
@@ -45,6 +47,9 @@ void safety_arm();                 // end bypass / OFF now
 /** SLI OFF: no motion cut at all until SLI ON or the next reboot (not saved, so a
  *  power cycle always comes back armed). E-stop latch and dead-man still work. */
 void safety_off();
+
+/** SLI CUT P|R|S: how far ahead motions are cut (safety_logic.h). Not saved: every boot is PREDICTIVE. */
+void safety_setCutMode(SliCutMode m);
 
 /** CommandTask only: one "LC ..." line (args = text after "LC"). Sends its own $ACK. */
 void safety_handleLc(const char* args);

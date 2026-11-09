@@ -1,0 +1,6 @@
+# PC test binaries (built from host_tests/*.cpp, see esp32_mainv2/README.md section 10)
+*.exe
+host_tests/test_safety
+host_tests/test_shaper
+host_tests/test_encoder_axis
+host_tests/test_imu_filter

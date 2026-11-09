@@ -2,7 +2,7 @@
 //  PC unit tests for esp32_mainv2 load_chart.cpp + safety_logic.cpp (pure logic)
 //
 //  Build + run from software/firmware:
-//    g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 host_tests/test_safety.cpp esp32_mainv2/load_chart.cpp esp32_mainv2/safety_logic.cpp -o host_tests/test_safety && host_tests/test_safety
+//    g++ -std=c++17 -Wall -Wextra -I esp32_mainv2 -I host_tests host_tests/test_safety.cpp esp32_mainv2/load_chart.cpp esp32_mainv2/safety_logic.cpp -o host_tests/test_safety && host_tests/test_safety
 // ============================================================
 #include "load_chart.h"
 #include "safety_logic.h"
@@ -10,18 +10,8 @@
 #include <cstdio>
 #include <cstring>
 
-static int g_pass = 0, g_fail = 0;
-
-#define CHECK(cond) do { \
-    if (cond) g_pass++; \
-    else { g_fail++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } \
-} while (0)
-
-#define CHECK_NEAR(a, b, tol) do { \
-    const double _a = (a), _b = (b); \
-    if (std::fabs(_a - _b) <= (tol)) g_pass++; \
-    else { g_fail++; std::printf("FAIL %s:%d  %s = %.4f, expected %.4f\n", __FILE__, __LINE__, #a, _a, _b); } \
-} while (0)
+#include "check.h"
+#include <initializer_list>
 
 // Test chart: angles 0/10/20/30 deg, extensions 20/40/60 mm, rear zone at half capacity
 static const char* CHART[] = {
@@ -46,7 +36,7 @@ static LoadChart buildChart() {
 }
 
 static SafetyInputs pose(float boom, float ext, float swing, float load) {
-    SafetyInputs in;
+    SafetyInputs in = {};   // rates 0, PREDICTIVE
     in.boomDeg = boom; in.extMm = ext; in.swingDeg = swing; in.loadKg = load; in.sensorsOK = true;
     return in;
 }
@@ -178,8 +168,9 @@ static void test_hysteresis() {
 
 static void test_soft_limits() {
     const LoadChart c = buildChart();
-    // Empty hook at the bottom edge of the chart: boom down is never cut (no soft limit)
-    SafetyResult r = sli_evaluate(&c, pose(-0.5f, 40, 0, 0.0f), SLI_OK);
+    // Empty hook at the bottom edge of the chart: boom down is not cut by the LOAD
+    // logic, only by the end stop (SLI_BOOM_MIN_DEG); just above it, it is free
+    SafetyResult r = sli_evaluate(&c, pose(-0.4f, 40, 0, 0.0f), SLI_OK);
     CHECK(r.state == SLI_OK);
     CHECK(!blocked(r, 2, 0));
     CHECK(!blocked(r, 2, 1));
@@ -199,7 +190,7 @@ static void test_outside_not_stuck() {
     CHECK(r.state == SLI_CUT);
     CHECK_NEAR(r.pct, SLI_PCT_MAX, 1e-3);
     CHECK(!blocked(r, 2, 1));     // boom up: toward the chart
-    CHECK(!blocked(r, 2, 0));     // boom down: never cut, even further out
+    CHECK(blocked(r, 2, 0));      // boom down: below the end stop (SLI_BOOM_MIN_DEG)
     CHECK(blocked(r, 3, 1));      // extend: still cut out here
 }
 
@@ -243,6 +234,75 @@ static void test_lift_until_limit() {
     CHECK(!blocked(r, 3, 0) && !blocked(r, 3, 1));   // extension doesn't change capacity here
 }
 
+/** Same falling chart: where does each cut mode stop boom-up with 1 kg (100 % at 6.67 deg)? */
+static LoadChart fallingChart() {
+    LoadChart c = buildChart();
+    c.nZ = 0;
+    const float rows[4] = {1.2f, 0.9f, 0.8f, 0.7f};
+    for (uint8_t i = 0; i < c.nA; i++) for (uint8_t j = 0; j < c.nE; j++) c.capKg[i][j] = rows[i];
+    return c;
+}
+
+/** First boom angle (0.05 deg steps from 0 deg) at which boom up is cut. */
+static float boomUpCutAt(const LoadChart& c, SliCutMode mode, float boomRate) {
+    SliState prev = SLI_OK;
+    for (float b = 0.0f; b < 12.0f; b += 0.05f) {
+        SafetyInputs in = pose(b, 40, 0, 1.0f);
+        in.cutMode = mode;
+        in.boomRate = boomRate;
+        const SafetyResult r = sli_evaluate(&c, in, prev);
+        prev = r.state;
+        if (blocked(r, 2, 1)) return b;
+    }
+    return 99.0f;
+}
+
+static void test_cut_modes() {
+    const LoadChart c = fallingChart();
+    const float limit = 6.667f;
+    const float pred  = boomUpCutAt(c, SLI_CUT_PREDICTIVE, 2.0f);
+    const float react = boomUpCutAt(c, SLI_CUT_REACTIVE, 2.0f);
+    const float slow  = boomUpCutAt(c, SLI_CUT_SPEED, 2.0f);    // 2 deg/s x 0.25 s = 0.5 deg < 1 deg step
+    const float fast  = boomUpCutAt(c, SLI_CUT_SPEED, 12.0f);   // 12 deg/s x 0.25 s = 3 deg ahead
+    CHECK_NEAR(pred, limit - SLI_LOOK_BOOM_DEG, 0.06);          // one step early
+    CHECK(react >= limit - 0.01f && react < limit + 0.06f);      // only once 100 % is reached
+    CHECK_NEAR(slow, pred, 0.06);                               // slow: same as the fixed step
+    CHECK_NEAR(fast, limit - 12.0f * SLI_LOOK_TIME_S, 0.06);    // fast: 3 deg early
+
+    // Moving AWAY from the limit never widens the look-ahead (boom going down fast)
+    CHECK_NEAR(boomUpCutAt(c, SLI_CUT_SPEED, -12.0f), pred, 0.06);
+
+    // In every mode the recovering direction stays free at and beyond the limit
+    for (SliCutMode m : { SLI_CUT_PREDICTIVE, SLI_CUT_REACTIVE, SLI_CUT_SPEED }) {
+        SafetyInputs in = pose(8.0f, 40, 0, 1.0f);              // past the limit: 1 kg > 0.87 kg rated
+        in.cutMode = m;
+        const SafetyResult r = sli_evaluate(&c, in, SLI_CUT);
+        CHECK(r.state == SLI_CUT);
+        CHECK(blocked(r, 2, 1));
+        CHECK(!blocked(r, 2, 0));
+        CHECK(blocked(r, 4, SLI_WINCH_HOIST_DIR));
+    }
+    // Reactive below the limit: nothing cut even one step before it
+    SafetyInputs in = pose(6.3f, 40, 0, 1.0f);
+    in.cutMode = SLI_CUT_REACTIVE;
+    CHECK(!blocked(sli_evaluate(&c, in, SLI_WARN), 2, 1));
+    CHECK(sli_cutModeLetter(SLI_CUT_REACTIVE) == 'R' && sli_cutModeLetter(SLI_CUT_SPEED) == 'S' &&
+          sli_cutModeLetter(SLI_CUT_PREDICTIVE) == 'P');
+}
+
+static void test_boom_travel_limit() {
+    const LoadChart c = buildChart();
+    // Boom on its stop (IMU below -0.5 deg): boom down cut, in every state, even with no chart
+    SafetyInputs low = pose(-0.6f, 40, 0, 0.1f);
+    CHECK(sli_travelLimits(low) == sli_bit(2, 0));
+    CHECK(blocked(sli_evaluate(&c, low, SLI_OK), 2, 0));
+    CHECK(blocked(sli_evaluate(nullptr, low, SLI_OK), 2, 0));         // FAULT keeps the end stop too
+    CHECK(!blocked(sli_evaluate(&c, low, SLI_OK), 2, 1));             // boom up still free
+    // Just above the stop: free
+    CHECK(sli_travelLimits(pose(-0.4f, 40, 0, 0.1f)) == 0);
+    CHECK(sli_travelLimits(pose(NAN, 40, 0, 0.1f)) == 0);
+}
+
 int main() {
     test_parse();
     test_validate();
@@ -258,6 +318,7 @@ int main() {
     test_swing_zone();
     test_reason();
     test_lift_until_limit();
-    std::printf("%d passed, %d failed\n", g_pass, g_fail);
-    return g_fail ? 1 : 0;
+    test_cut_modes();
+    test_boom_travel_limit();
+    return check_summary("safety");
 }
