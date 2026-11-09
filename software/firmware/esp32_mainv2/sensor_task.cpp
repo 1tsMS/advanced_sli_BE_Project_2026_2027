@@ -88,6 +88,10 @@ static uint32_t _angCalStartMs = 0;
 // Smoothed corrected load (load_filter.h). Reset after a tare / scale change so it jumps to the new value.
 static LoadFilter _loadFilter;
 
+// A raw accel sample this far from the filtered boom angle counts as a spike (E1).
+// Static noise of the raw accel angle is ~0.1-0.3 deg, so 2 deg is clearly EMI.
+static const float IMU_SPIKE_DEG = 2.0f;
+
 // ---- Bus task (HwBusTask, core 0): bus 0 MPU6050, bus 1 boom AS5600, bus 3 swing AS5600 ----
 // Bit-banged I2C busy-waits, so these three sensors are read on core 0 and only
 // their raw results are handed over here. Noise on the long boom-tip cable then
@@ -103,6 +107,8 @@ struct HwBusShared {
     float    accelPk  = 0.0f;        // m/s^2 beyond gravity, peak since SensorTask last took it
     float    jerkPk   = 0.0f;        // m/s^3, same
     uint32_t imuRejected = 0;        // corrupted IMU samples skipped since boot
+    float    imuRawBoom  = 0.0f;     // boom angle from the raw accel of the last sample (E1)
+    uint32_t imuSpikes   = 0;        // samples whose raw angle was > IMU_SPIKE_DEG off the filtered one
     AS5600MagnetStatus mag[2] = {};
     bool     magNew[2] = {false, false};
     float    workMaxMs = 0.0f;       // worst hardware-bus cycle since the last DBG
@@ -608,6 +614,18 @@ void sensorTask_hwBus(void* pvParameters) {
         const float imuBoom  = wrapDeg180(boomBase - _boomAngleOffset) * (_boomInvert ? -1.0f : 1.0f);
         const float imuTilt  = wrapDeg180(tiltBase - _tiltAngleOffset) * (_tiltInvert ? -1.0f : 1.0f);
 
+        // Raw (unfiltered) boom angle and spike count, once per new sample (E1 noise test).
+        // Same source / zero / sign as the filtered angle, so the two are directly comparable.
+        static uint32_t seenImuSample = 0;
+        static float    imuRawBoom    = 0.0f;
+        static uint32_t imuSpikes     = 0;
+        if (imuOK && _imu->sampleCount() != seenImuSample) {
+            seenImuSample = _imu->sampleCount();
+            const float rawBase = (_boomSource == 1) ? _imu->getRawPitch() : _imu->getRawRoll();
+            imuRawBoom = wrapDeg180(rawBase - _boomAngleOffset) * (_boomInvert ? -1.0f : 1.0f);
+            if (fabsf(wrapDeg180(imuRawBoom - imuBoom)) > IMU_SPIKE_DEG) imuSpikes++;
+        }
+
         const float workMs = (micros() - t0) / 1000.0f;
         const float accelDyn = imuOK ? _imu->getAccelDyn() : 0.0f;
         const float jerk     = imuOK ? _imu->getJerk()     : 0.0f;
@@ -618,6 +636,8 @@ void sensorTask_hwBus(void* pvParameters) {
         if (accelDyn > _hw.accelPk) _hw.accelPk = accelDyn;
         if (jerk     > _hw.jerkPk)  _hw.jerkPk  = jerk;
         _hw.imuRejected = _imu ? _imu->rejectedSamples() : 0;
+        _hw.imuRawBoom  = imuRawBoom;
+        _hw.imuSpikes   = imuSpikes;
         if (workMs > _hw.workMaxMs) _hw.workMaxMs = workMs;
         taskEXIT_CRITICAL(&_hwMux);
 
@@ -884,6 +904,8 @@ void sensorTask(void* pvParameters) {
             if (hw.accelPk > sensorData.accelDynPk) sensorData.accelDynPk = hw.accelPk;
             if (hw.jerkPk  > sensorData.jerkPk)     sensorData.jerkPk     = hw.jerkPk;
             sensorData.imuRejected = hw.imuRejected;
+            sensorData.imuRawBoom  = hw.imuRawBoom;
+            sensorData.imuSpikes   = hw.imuSpikes;
 
             sensorData.fsr[0] = fsrVals[0];
             sensorData.fsr[1] = fsrVals[1];

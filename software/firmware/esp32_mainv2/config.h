@@ -168,6 +168,8 @@ struct SensorData {
     float accelDynPk;        // m/s^2 beyond gravity
     float jerkPk;            // m/s^3
     uint32_t imuRejected;    // corrupted IMU samples skipped since boot (EMI indicator)
+    float    imuRawBoom;     // degrees: boom angle from the raw accel, no filter (E1 noise test)
+    uint32_t imuSpikes;      // raw samples > 2 deg off the filtered angle since boot (EMI indicator)
 
     // Outrigger force sensors (ADC counts 0-4095 = 0-3.3 V, smoothed: see FSR_SMOOTH_TAU_S)
     uint16_t fsr[4];

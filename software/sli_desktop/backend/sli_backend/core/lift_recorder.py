@@ -40,6 +40,7 @@ LIFT_HEADER = [
     "fsr1", "fsr2", "fsr3", "fsr4", "tipValid", "tipMargin", "copX", "copY",
     "m1", "m2", "m3", "m4", "shaping",
     "accelDyn", "jerk", "imuRejected", "cutMode", "drvIdle", "loadRaw",
+    "imuRaw", "imuSpikes",
 ]
 _MOTOR = re.compile(r"^M([1-4])\s+S(\d+)\s+D([01])$")
 _STOP = re.compile(r"^M0\s+A([1-4])")
@@ -185,6 +186,8 @@ class LiftRecorder:
             "accelDyn": round(frame.accelDyn, 3), "jerk": round(frame.jerk, 1),
             "imuRejected": frame.imuRejected, "cutMode": self.safety.cutMode,
             "drvIdle": "" if self.safety.drvIdle is None else int(self.safety.drvIdle),
+            "imuRaw": "" if frame.imuRawBoom is None else round(frame.imuRawBoom, 2),
+            "imuSpikes": frame.imuSpikes,
         }
         self._rows.append(row)
         try:

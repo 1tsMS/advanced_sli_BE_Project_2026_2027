@@ -8,7 +8,7 @@
 int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufLen) {
     // Field order: telemetry_fmt.h
     int written = snprintf(buffer, bufLen,
-        "$T,%.2f,%.1f,%.3f,%.3f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.3f,%.1f,%u,%.1f,%.1f,%.2f,%.1f,%lu\n",
+        "$T,%.2f,%.1f,%.3f,%.3f,%.2f,%.1f,%u,%u,%u,%u,%.2f,%.2f,%.3f,%.1f,%u,%.1f,%.1f,%.2f,%.1f,%lu,%.2f,%lu\n",
         data.boomAngle,
         data.extensionMM,
         data.loadCellRaw,
@@ -25,7 +25,9 @@ int TelemetryFormatter::format(const SensorData& data, char* buffer, size_t bufL
         data.hookDropMM,
         data.accelDynPk,
         data.jerkPk,
-        (unsigned long)data.imuRejected
+        (unsigned long)data.imuRejected,
+        data.imuRawBoom,
+        (unsigned long)data.imuSpikes
     );
     return written;
 }

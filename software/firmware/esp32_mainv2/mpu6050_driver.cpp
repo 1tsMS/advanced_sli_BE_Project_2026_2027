@@ -124,6 +124,9 @@ void MPU6050Driver::update() {
 
     const Vec3 a = { ax * _accelScale, ay * _accelScale, az * _accelScale };
     const Vec3 g = { gx - _gyroOffsetX, gy - _gyroOffsetY, gz - _gyroOffsetZ };
+    _rawRoll  = accelRollDeg(a);
+    _rawPitch = accelPitchDeg(a);
+    _samples++;
     _out = _filter.update(a, g, dt);
 }
 

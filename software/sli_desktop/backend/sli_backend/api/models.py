@@ -30,6 +30,9 @@ class TelemetryFrame(BaseModel):
     accelDyn:      float = 0.0   # m/s^2 beyond gravity, peak since the previous frame
     jerk:          float = 0.0   # m/s^3, peak since the previous frame
     imuRejected:   int   = 0     # corrupted IMU samples skipped since the ESP32 booted
+    # Raw IMU for the E1 noise test (firmware from 2026-11-09; None / 0 for older firmware)
+    imuRawBoom:    Optional[float] = None   # deg, boom angle from the raw accel, no filter
+    imuSpikes:     int   = 0     # raw samples > 2 deg off the filtered angle since boot
     timestamp:     float = 0.0   # Unix timestamp (added by backend)
     # Tipping margin from the FSRs (computed by the backend, core/tipping.py)
     tipValid:      bool  = False

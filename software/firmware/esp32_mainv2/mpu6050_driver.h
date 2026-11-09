@@ -46,6 +46,13 @@ public:
     float getAccelDyn() const { return _out.accelDyn; }
     float getJerk()     const { return _out.jerk; }
 
+    // Unfiltered tilt of the LAST accepted sample: accelerometer only, scale-corrected,
+    // before the median and the gate (E1: what the EMI does to the raw signal).
+    float getRawRoll()  const { return _rawRoll; }
+    float getRawPitch() const { return _rawPitch; }
+    /** Bumped once per sample that reached the filter (not rejected / calibrating). */
+    uint32_t sampleCount() const { return _samples; }
+
     uint32_t reconnects()      const { return _reconnects; }
     uint32_t rejectedSamples() const { return _rejected; }
     /** 1 g / |accel at rest| from the last calibration (1.0 = never calibrated). */
@@ -66,6 +73,8 @@ private:
     uint8_t  _consecutiveFails = 0;
     uint32_t _reconnects = 0;     // re-inits after dropouts
     uint32_t _rejected   = 0;     // implausible (corrupted) samples skipped
+    float    _rawRoll = 0.0f, _rawPitch = 0.0f;
+    uint32_t _samples = 0;
 
     // Gyro step gate (raw deg/s of the last accepted sample)
     static constexpr float   GYRO_STEP_MAX    = 100.0f;   // deg/s change per sample

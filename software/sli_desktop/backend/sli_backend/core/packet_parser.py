@@ -21,6 +21,7 @@ TELEMETRY_FIELD_COUNTS = (
     15,   # base
     17,   # + ropeTotalMM, hookDropMM (2026-10-29)
     20,   # + accelDyn, jerk, imuRejected (2026-11-07)
+    22,   # + imuRawBoom, imuSpikes (2026-11-09, E1 raw IMU noise)
 )
 
 
@@ -153,7 +154,8 @@ class PacketParser:
         Parse $T CSV line into TelemetryFrame.
         Format: $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
                    ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
-                   safeLimit,loadPct,alarmLvl[,ropeTotalMM,hookDropMM[,accelDyn,jerk,imuRejected]]
+                   safeLimit,loadPct,alarmLvl[,ropeTotalMM,hookDropMM[,accelDyn,jerk,imuRejected
+                   [,imuRawBoom,imuSpikes]]]
         Fields missing from older firmware are left at 0.
         """
         try:
@@ -182,6 +184,8 @@ class PacketParser:
                 accelDyn      = float(parts[18]) if n >= 20 else 0.0,
                 jerk          = float(parts[19]) if n >= 20 else 0.0,
                 imuRejected   = int(parts[20]) if n >= 20 else 0,
+                imuRawBoom    = float(parts[21]) if n >= 22 else None,
+                imuSpikes     = int(parts[22]) if n >= 22 else 0,
                 timestamp     = time.time(),
             )
             return frame

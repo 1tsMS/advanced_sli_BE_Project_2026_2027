@@ -3,11 +3,13 @@
 //  Formats SensorData into the $T CSV telemetry string
 //  sent to the PC at TELEMETRY_RATE_HZ.
 //
-//  Packet format (20 fields):
+//  Packet format (22 fields):
 //  $T,boomAngle,extensionMM,measuredLoad,actualLoad,swingAngle,
 //     ropeLenMM,fsr1,fsr2,fsr3,fsr4,imuRoll,imuPitch,
 //     safeLimit,loadPct,alarmLvl,ropeTotalMM,hookDropMM,
-//     accelDyn,jerk,imuRejected\n
+//     accelDyn,jerk,imuRejected,imuRawBoom,imuSpikes\n
+//  imuRawBoom: boom angle from the raw accel (no filter); imuSpikes: raw samples
+//  > 2 deg off the filtered angle since boot. Both for the E1 noise test.
 //  Fields are only ever appended, so a parser that reads the first N still lines up.
 //  accelDyn (m/s^2) and jerk (m/s^3) are boom-tip PEAKS since the previous $T.
 // ============================================================
