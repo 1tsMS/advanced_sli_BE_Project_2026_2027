@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from ..api.models import (
     CommandRequest, ConnectionRequest, LoadChartProfile, SafetyStatus, BypassRequest,
     StatusResponse, ApiResponse, ImuCalibrateRequest, TeleCalibrateRequest,
-    EncoderCalibrateRequest, RopeCalibrateRequest,
+    EncoderCalibrateRequest, RopeCalibrateRequest, RopeKnotRequest,
     LoadCalibrateRequest, AxisScaleRequest,
 )
 from ..api.ws_endpoint import ws_manager
@@ -280,6 +280,20 @@ async def calibrate_rope(req: RopeCalibrateRequest):
         if not ok:
             raise HTTPException(400, msg)
     return ApiResponse(ok=True, message="Sent " + " + ".join(cmds))
+
+
+@router.post("/calibrate/rope-knot", response_model=ApiResponse)
+async def calibrate_rope_knot(req: RopeKnotRequest):
+    """Knot to hook curve (mm) -> CAL6 K. Saved on the ESP32; hook drop and rope total use it."""
+    if not _command_router:
+        raise HTTPException(500, "Command router not initialized")
+    if not (0 <= req.mm <= 500):
+        raise HTTPException(400, "Knot to hook must be 0-500 mm")
+    cmd = f"CAL6 K{req.mm:.1f}"
+    ok, msg = _command_router.send(cmd)
+    if not ok:
+        raise HTTPException(400, msg)
+    return ApiResponse(ok=True, message=f"Sent {cmd}")
 
 
 # ------------------------------------------------------------------ #

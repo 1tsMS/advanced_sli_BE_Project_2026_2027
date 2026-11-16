@@ -294,7 +294,7 @@ void commandTask(void* pvParameters) {
                                 queueCal(CAL_ENC_INVERT, cmd.encAxis, 0.0f, cmd.encInvert);
                                 break;
                             case CAL_ROPE_SCALE:
-                                queueCal(CAL_ROPE_SCALE, CAL_AXIS_ROPE, cmd.encValue, -1);
+                                queueCal(CAL_ROPE_SCALE, CAL_AXIS_ROPE, cmd.encValue, cmd.calSub == 1 ? 1 : -1);
                                 break;
                             case CAL_LOAD:
                                 queueCal(CAL_LOAD, cmd.calSub, cmd.encValue, -1);

@@ -7,6 +7,8 @@ const STATUS_URL = `${API_BASE}/status`;
 const RECONNECT_DELAY = 3000;
 const HISTORY_S = 60;          // rolling window kept for the live charts
 export const CAPTURE_S = 300;  // "5-min capture" length
+const FRAME_UI_MS = 66;        // readouts redraw at ~15 Hz; the charts keep every 50 Hz frame (history ref)
+const FAULT_HOLD_S = 2;        // SLI FAULT: keep showing the last capacity / load % this long
 
 export type WsStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -62,6 +64,9 @@ export function useTelemetry(): UseTelemetryReturn {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTelemetryTime = useRef<number>(0);
   const mountedRef = useRef(true);
+  const lastFrameSet = useRef(0);
+  const sliState = useRef<string>("");
+  const lastRated = useRef<{ cap: number; pct: number; ts: number } | null>(null);
 
   // Poll backend status for ESP32 serial link
   const checkStatus = useCallback(async () => {
@@ -103,7 +108,21 @@ export function useTelemetry(): UseTelemetryReturn {
           f.accelShock = s.accel.push(f.accelDyn ?? 0);
           f.jerkShock = s.jerk.push(f.jerk ?? 0);
           f.accelPeak = s.peak.push(f.accelShock, f.timestamp * 1000);
-          setFrame(f);
+          // In FAULT the ESP32 reports capacity 0 / 0 %. A short sensor dropout would
+          // flash the readouts and cut the charts, so the last real values are shown
+          // for up to FAULT_HOLD_S (the SLI badge still says FAULT; longer = shown as is).
+          if (f.safeLoadLimit > 0) {
+            lastRated.current = { cap: f.safeLoadLimit, pct: f.loadPercent, ts: f.timestamp };
+          } else if (sliState.current === "FAULT" && lastRated.current &&
+                     f.timestamp - lastRated.current.ts <= FAULT_HOLD_S) {
+            f.safeLoadLimit = lastRated.current.cap;
+            f.loadPercent = lastRated.current.pct;
+          }
+          const nowMs = performance.now();
+          if (nowMs - lastFrameSet.current >= FRAME_UI_MS) {
+            lastFrameSet.current = nowMs;
+            setFrame(f);
+          }
           const p: LivePoint = {
             t: 0, ts: f.timestamp, load: f.actualLoad, cap: f.safeLoadLimit,
             pct: f.safeLoadLimit > 0 ? f.loadPercent : null,
@@ -137,6 +156,7 @@ export function useTelemetry(): UseTelemetryReturn {
           lastTelemetryTime.current = Date.now();
           setEspConnected(true);
         } else if (msg.type === "safety") {
+          sliState.current = (msg as SafetyStatus).state;
           setSafety({ ...(msg as SafetyStatus), receivedAt: Date.now() });
         } else if (msg.type === "shaping") {
           setShaping({ on: !!msg.on, lengthMm: msg.lengthMm, halfPeriodMs: msg.halfPeriodMs });

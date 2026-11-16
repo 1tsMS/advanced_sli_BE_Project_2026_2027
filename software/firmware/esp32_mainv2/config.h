@@ -120,7 +120,8 @@
 // the encoder never sees (measured 2026-10-29):
 #define ROPE_FIXED_PATH_MM      288.0f   // bearing centre to the load-cell edge, telescope retracted
                                          // (new boom head, MS 2026-11-09; was 245 with the old head)
-#define ROPE_KNOT_TO_HOOK_MM     76.0f   // knot to the hook curve (MS 2026-11-09; was 90)
+#define ROPE_KNOT_TO_HOOK_MM     76.0f   // knot to the hook curve: DEFAULT only, set with CAL6 K<mm>
+                                         // (saved in NVS; MS 2026-11-09 measured 76, was 90)
 // -> ropeTotalMM = calibrated + 288 + 76      (all rope + hook)
 // -> hookDropMM  = calibrated + 76            (load-cell end to hook tip: the part that
 //                                              hangs and swings, i.e. the pendulum length)

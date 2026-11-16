@@ -81,7 +81,7 @@ export function reasonText(code: string, s: SafetyStatus | null): string {
       if (s?.why === "OUTSIDE") return "The crane is outside the load chart (boom angle or extension): only moves back into it are allowed.";
       return s ? `Overload: ${s.pct.toFixed(0)} % of ${s.capKg.toFixed(3)} kg rated here.` : "Overload.";
     case "LIMIT": return "That move would cross the chart's cut line or leave the chart.";
-    case "TRAVEL": return "The boom is on its lower stop (IMU at or below -0.5°): boom down is cut in every SLI mode, bypass and off included.";
+    case "TRAVEL": return "The boom is on its lower stop (IMU at or below -0.5°): boom down is cut while the SLI is armed (bypass or off lifts it).";
     default:      return code;
   }
 }

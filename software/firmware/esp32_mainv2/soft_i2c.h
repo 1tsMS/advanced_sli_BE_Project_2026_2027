@@ -136,6 +136,12 @@ private:
         if (gpio_get_level(_scl) == 0 && !_fault) { _fault = true; _sclFaults++; }
     }
     inline void sclLow()  { gpio_set_level(_scl, 0); delayMicroseconds(_delay); }
+    /** SDA while SCL is high: majority of 3 reads (~0.3 us apart), so one narrow noise
+     *  spike on the long boom cable can't flip a bit. */
+    inline bool sdaRead() {
+        const int a = gpio_get_level(_sda), b = gpio_get_level(_sda), c = gpio_get_level(_sda);
+        return (a + b + c) >= 2;
+    }
 
     /** START: SDA falls while SCL is high */
     inline void start() {
@@ -163,7 +169,7 @@ private:
         }
         sdaHigh();                                   // release SDA for the ACK
         sclHigh();
-        const bool ack = (gpio_get_level(_sda) == 0);
+        const bool ack = !sdaRead();
         sclLow();
         return ack && !_fault;
     }
@@ -174,7 +180,7 @@ private:
         sdaHigh();                                   // release SDA so the slave can drive it
         for (int8_t i = 7; i >= 0; i--) {
             sclHigh();
-            if (gpio_get_level(_sda)) data |= (uint8_t)(1 << i);
+            if (sdaRead()) data |= (uint8_t)(1 << i);
             sclLow();
         }
         if (ack) sdaLow(); else sdaHigh();

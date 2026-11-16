@@ -135,7 +135,7 @@ export function TelemetryPanel({ frame: f, safety, chart, warnPct = 90, cutPct =
           <Tile k="Hook drop" v={f && f.hookDrop > 0 ? fmt(f.hookDrop, 0) : "–"} unit="mm"
                 title={`Load-cell end to hook tip. Calibrated rope: ${fmt(f?.ropeLength, 0)} mm`} />
           <Tile k="Rope total" v={f && f.ropeTotal > 0 ? fmt(f.ropeTotal, 0) : "–"} unit="mm"
-                title="Calibrated rope (load-cell edge to knot) + 288 mm bearing centre to load-cell edge + 76 mm knot to hook" />
+                title="Calibrated rope (load-cell edge to knot) + 288 mm bearing centre to load-cell edge + knot to hook (set in Calibrate → Rope)" />
           <Tile k="Boom lean" v={fmt(lean)} unit="°" level={leanLevel} title="Sideways lean from the IMU: warning above 3°, alarm above 5°" />
           <Tile k="Boom-tip shock" v={fmt(f?.accelPeak, 2)} unit="m/s²"
                 title="Acceleration above the idle level at the boom tip, peak of the last 2 s (0 at rest)" />

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import {
   LayoutDashboard, SlidersHorizontal, LineChart, ClipboardCheck, Grid3x3, Settings, OctagonX,
 } from "lucide-react";
@@ -15,10 +15,16 @@ import { DebugTab } from "./components/debug/DebugTab";
 import { SliControl, BypassBanner, BlockAlert } from "./components/sli/SliControl";
 import { liveSafety, useNow } from "./components/sli/sliStatus";
 import { LoadChartTab } from "./components/loadchart/LoadChartTab";
-import { DataLoggerTab } from "./components/datalogger/DataLoggerTab";
-import { OperatorTab } from "./components/operator/OperatorTab";
-import { LiftControl } from "./components/controls/LiftControl";
+import { DataLoggerTab as DataLoggerTabRaw } from "./components/datalogger/DataLoggerTab";
+import { OperatorTab as OperatorTabRaw } from "./components/operator/OperatorTab";
+import { LiftControl as LiftControlRaw } from "./components/controls/LiftControl";
 import { API_BASE } from "./api";
+
+// These take no telemetry frame: memo keeps the frame updates (15 Hz) from re-rendering
+// their charts and lists. Without it the Data tab redrew every chart on every frame.
+const DataLoggerTab = memo(DataLoggerTabRaw);
+const OperatorTab = memo(OperatorTabRaw);
+const LiftControl = memo(LiftControlRaw);
 
 /** Navigation in display-hierarchy order: L1 overview, L3 detail, L4 diagnostics, setup. */
 const NAV: { id: TabId; icon: React.ReactNode; label: string }[] = [

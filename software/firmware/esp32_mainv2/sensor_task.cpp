@@ -148,6 +148,7 @@ struct RopeCal {
     float   ref    = 0.0f;
     int32_t zero   = 0;
     float   extRef = NAN;   // telescope extension when the rope was referenced (NAN = unknown: no compensation)
+    float   knot   = ROPE_KNOT_TO_HOOK_MM;   // knot to hook curve, mm (CAL6 K)
 };
 static RopeCal _rope;
 
@@ -231,7 +232,7 @@ static void savePosition(uint8_t idx) {
 }
 
 static void saveRope() {
-    persist_setRope(_rope.scale, _rope.sign < 0, _rope.extRef);
+    persist_setRope(_rope.scale, _rope.sign < 0, _rope.extRef, _rope.knot);
 }
 
 void sensorTask_loadCalibration() {
@@ -264,6 +265,7 @@ void sensorTask_loadCalibration() {
     _rope.scale = (ropeScale > 0.0f) ? ropeScale : ROPE_MM_PER_COUNT_DEFAULT;
     _rope.sign  = p.getBool("inv", ROPE_DEFAULT_INVERT) ? -1 : 1;
     _rope.extRef = p.getFloat("ext_ref", NAN);   // absent until the rope is re-referenced
+    _rope.knot   = p.getFloat("knot", ROPE_KNOT_TO_HOOK_MM);
     p.end();
 
     // ---- Saved positions (encoders are restored after their first sample) ----
@@ -547,6 +549,13 @@ static void runCal(const CalRequest& req) {
         }
 
         case CAL_ROPE_SCALE: {
+            if (req.flag == 1) {   // CAL6 K<mm>: knot to hook curve
+                if (!(req.value >= 0.0f && req.value <= 500.0f)) { serialLine("$ACK,CAL6,ERR,RANGE"); return; }
+                _rope.knot = req.value;
+                saveRope();
+                serialLine("$ACK,CAL6,KNOT_SAVED,MM:%.1f", _rope.knot);
+                return;
+            }
             if (!(req.value > 0.0f && req.value < 10.0f)) { serialLine("$ACK,CAL6,ERR,RANGE"); return; }
             // Scales around the last reference point (CAL4 A4 / CAL5 A4). The
             // dashboard's ruler fit sends CAL4 A4 V<measured> right after this.
@@ -729,8 +738,8 @@ void sensorTask(void* pvParameters) {
         stageEnd(STAGE_CAL, st);
 
         // ---- IMU angles from the bus task ----
-        // While the IMU is re-initialising (imuOK false) the bus task reports
-        // 0 - offset, so hold the last good angles instead of passing that on.
+        // While the IMU is stale (imuOK false: no good sample for 500 ms) the bus task
+        // reports 0 - offset, so hold the last good angles instead of passing that on.
         // sensorsOK goes false meanwhile, so the hold is never silent.
         static float heldImuBoom = 0.0f, heldImuTilt = 0.0f;
         const bool imuOK = hw.imuOK;
@@ -889,8 +898,8 @@ void sensorTask(void* pvParameters) {
             // Total rope is fixed by the drum; the hanging part shrinks as the telescope extends
             const float ropeHang = ropeLen - ropeExtShift(sensorData.extensionMM);
             sensorData.ropeLengthMM = ropeHang;
-            sensorData.ropeTotalMM  = ropeLen + ROPE_FIXED_PATH_MM + ROPE_KNOT_TO_HOOK_MM;
-            sensorData.hookDropMM   = ropeHang + ROPE_KNOT_TO_HOOK_MM;
+            sensorData.ropeTotalMM  = ropeLen + ROPE_FIXED_PATH_MM + _rope.knot;
+            sensorData.hookDropMM   = ropeHang + _rope.knot;
 
             sensorData.loadCellRaw  = weight;   // kg, uncorrected
             // Boom-angle correction (load_angle.h), then adaptive smoothing (load_filter.h).
@@ -949,6 +958,7 @@ void sensorTask(void* pvParameters) {
             _diag.ropeCounts      = _rope.sign * ropeRawCounts();
             _diag.ropeScale       = _rope.scale;
             _diag.ropeInverted    = _rope.sign < 0;
+            _diag.ropeKnot        = _rope.knot;
             _diag.boomCalibrated  = _boomCalibrated;
             _diag.boomFromEncoder = boomEncOK;
             _diag.hx711Raw        = _loadCell ? _loadCell->getLastRaw() : 0;

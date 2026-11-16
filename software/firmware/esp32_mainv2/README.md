@@ -70,7 +70,7 @@ All pins are defined in `config.h`.
 | I2C bus 2 SDA / SCL | 15 / 5 | telescope AS5600, 5 us half-bit (strapping pins, held high by the pull-ups) |
 | I2C bus 3 SDA / SCL | 32 / 33 | swing AS5600, 5 us half-bit |
 | (all buses) | | 4.7k pull-ups to 3V3; `test_codes/encoder_bus_test` checks them |
-| HX711 DT / SCK | 17 / 16 | load cell on the boom tip |
+| HX711 DT / SCK | 16 / 17 | load cell on the boom tip |
 | FSR 1-4 (FL, FR, RL, RR) | 34, 35, 39, 36 | outrigger force sensors, ADC1 (input-only pins) |
 | Fault-injection switch | 0 (BOOT) | test E6: closed = LOW, logged as `$EV,<ms>,FI,1`. Open it before a reset |
 | DRV8833 AIN1 / AIN2 | 13 / 14 | winch PWM |
@@ -299,7 +299,7 @@ Weight = (raw - offset) / scale, with a ±20 g dead band around zero.
   That is the drum side. The winch is fixed and the rope runs along the telescope,
   so extending pulls rope over the tip: hanging length = rope - (extension - extRef),
   where `extRef` is the extension recorded when the rope reference (`CAL4 A4`) was set.
-  Hook drop = hanging + 76 mm (knot to hook curve); total rope = rope + 288 + 76 mm
+  Hook drop = hanging + knot (knot to hook curve, 76 mm default, `CAL6 K<mm>`); total rope = rope + 288 + knot
   (288 = bearing centre to the load-cell edge, retracted; fixed by the drum).
 - Dead-man in CommandTask: no M4 for 400 ms = stop.
 
@@ -422,7 +422,7 @@ button is held; that is the dead-man.
 
 | Prefix | Content |
 |---|---|
-| `$T` | telemetry, 50 Hz: boomAngle, extensionMM, measuredLoad, actualLoad, swingAngle, ropeLengthMM (calibrated: load-cell end to knot), fsr1-4 (ADC counts, smoothed), imuRoll (IMU boom angle), imuPitch (tilt), safeLoadLimit, loadPercent, alarmLevel, ropeTotalMM (+288 +76 mm), hookDropMM (+76 mm: load-cell end to hook tip), accelDyn (m/s², peak), jerk (m/s³, peak), imuRejected |
+| `$T` | telemetry, 50 Hz: boomAngle, extensionMM, measuredLoad, actualLoad, swingAngle, ropeLengthMM (calibrated: load-cell end to knot), fsr1-4 (ADC counts, smoothed), imuRoll (IMU boom angle), imuPitch (tilt), safeLoadLimit, loadPercent, alarmLevel, ropeTotalMM (+288 mm + knot), hookDropMM (+knot: load-cell end to hook tip), accelDyn (m/s², peak), jerk (m/s³, peak), imuRejected |
 | `$S` | SLI status, 5 Hz + on change: state, pct, capKg, zone, bypassLeftS, blockedHex, chart, mode, why, cut mode (P/R/S), driver idle (0/1) |
 | `$EV` | timestamped event, firmware ms: `FI,<0\|1>` fault switch, `SLI,<state>,<pct>` state change, `CUT,A<a>,D<d>` motion cut. Latencies in E5/E6 come from these |
 | `$ACK,...` | command results (`$ACK,CAL7,OK,...`, `$ACK,SLI,REFUSED,A2,D0,CUT`, `$ACK,LC,COMMITTED,<name>`, ...) |

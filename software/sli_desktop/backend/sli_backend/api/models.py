@@ -127,6 +127,11 @@ class EncoderCalibrateRequest(BaseModel):
     invert: Optional[bool]  = None    # direction
 
 
+class RopeKnotRequest(BaseModel):
+    """Knot to hook curve (mm): fixed rope part below the calibrated length."""
+    mm: float
+
+
 class RopeCalibrateRequest(BaseModel):
     """Rope (N20 winch encoder) scale: mm of rope per quadrature count."""
     scale:  float

@@ -54,8 +54,9 @@ enum SliState : uint8_t {
 // bottom: a limit switch has to. Set to 0 to cut boom down like every other move.
 #define SLI_BOOM_DOWN_ALWAYS 1
 
-// ---- Travel limits: mechanical end stops, enforced in EVERY mode ----
-// Not a load limit, so BYPASS and OFF don't lift it (only E-stop rules above it).
+// ---- Travel limits: mechanical end stops, enforced while the SLI is armed ----
+// BYPASS and OFF lift them too (MS, 16 Nov), so the boom can be driven onto its
+// stop to re-zero the IMU.
 // Boom down below this angle drives the leadscrew T-nut into the coupling: the
 // boom rests on its stop at 0° (IMU zeroed there), so -0.5° = "already on the
 // stop". A microswitch is still the real fix; this is the software guard.
@@ -120,7 +121,7 @@ inline uint8_t sli_bit(uint8_t axis, uint8_t dir) {
     return (uint8_t)(1u << (((axis - 1u) & 3u) * 2u + (dir & 1u)));
 }
 
-/** Motions past a mechanical end stop (bits as in SafetyResult::blocked). Any mode. */
+/** Motions past a mechanical end stop (bits as in SafetyResult::blocked). Armed only. */
 uint8_t sli_travelLimits(const SafetyInputs& in);
 
 /**

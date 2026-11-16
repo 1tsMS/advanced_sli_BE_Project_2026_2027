@@ -21,6 +21,7 @@ struct Staged {
     float         ropeScale;
     bool          ropeInv;
     float         ropeExtRef;
+    float         ropeKnot;
     PersistImu    imu;
     PersistRotary rot[2];
     bool          boomCal;
@@ -61,8 +62,9 @@ void persist_setTele(float scale, bool inverted) {
     markDirty(D_TELE);
 }
 
-void persist_setRope(float scale, bool inverted, float extRef) {
+void persist_setRope(float scale, bool inverted, float extRef, float knotMm) {
     taskENTER_CRITICAL(&_mux);
+    _staged.ropeKnot   = knotMm;
     _staged.ropeScale  = scale;
     _staged.ropeInv    = inverted;
     _staged.ropeExtRef = extRef;
@@ -161,7 +163,7 @@ static bool writeGroup(uint32_t bit, const Staged& s) {
         }
     } else if (bit == D_ROPE) {
         if (!p.begin("sli_rope", false)) return false;
-        ok = p.putFloat("scale", s.ropeScale) && p.putBool("inv", s.ropeInv);
+        ok = p.putFloat("scale", s.ropeScale) && p.putBool("inv", s.ropeInv) && p.putFloat("knot", s.ropeKnot);
         if (isfinite(s.ropeExtRef)) ok = ok && p.putFloat("ext_ref", s.ropeExtRef);
     } else if (bit == D_ROT0 || bit == D_ROT1) {
         const uint8_t idx = (bit == D_ROT0) ? 0 : 1;

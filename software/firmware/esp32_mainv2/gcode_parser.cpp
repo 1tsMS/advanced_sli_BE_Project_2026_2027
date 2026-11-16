@@ -122,8 +122,15 @@ ParseResult GCodeParser::parse(const char* line, ParsedCommand* out) {
                 return PARSE_INVALID_PARAMS;
             }
             case '6': {
+                // CAL6 S<mm per count> rope scale / CAL6 K<mm> knot to hook curve
                 out->calType  = CAL_ROPE_SCALE;
                 out->encAxis  = 3;
+                if (strchr(line + 4, 'K')) {
+                    out->calSub   = 1;
+                    out->encValue = extractFloatParam(line + 4, 'K', -1.0f);
+                    return out->encValue >= 0.0f ? PARSE_OK : PARSE_INVALID_PARAMS;
+                }
+                out->calSub   = 0;
                 out->encValue = extractFloatParam(line + 4, 'S', 0.0f);
                 if (!(out->encValue > 0.0f)) return PARSE_INVALID_PARAMS;
                 return PARSE_OK;

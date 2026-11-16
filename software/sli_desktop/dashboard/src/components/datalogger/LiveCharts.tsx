@@ -9,8 +9,8 @@ import { stableDomain, ticksFor } from "../telemetry/shock";
 
 const mmss = (v: number) => `${Math.floor(v / 60)}:${String(Math.round(v % 60)).padStart(2, "0")}`;
 
-const REFRESH_MS = 250;       // 4 Hz redraw, whatever the telemetry rate
-const MAX_POINTS = 600;       // per chart; longer spans are thinned (peaks kept, see thin())
+const REFRESH_MS = 500;       // 2 Hz redraw: 7 SVG charts cost ~25 ms per 100 points each time
+const MAX_POINTS = 240;       // per chart (~1 per 2 px); longer spans are thinned (peaks kept, see thin())
 const CAPTURE_S = 300;
 
 type Mode = "rolling" | "capture";

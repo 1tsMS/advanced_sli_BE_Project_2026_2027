@@ -14,8 +14,10 @@
 //               or the cell came loose
 //    OPEN       the reading sits near 0 counts while the tare says this cell's zero
 //               is far from 0: the cell is unplugged. Measured on the crane with all
-//               4 wires out: raw 2161..2225 (the open inputs float together), while a
-//               real bridge has its own offset. Needs |tare offset| > OPEN_MIN_OFFSET,
+//               4 wires out: raw 2161..2225 (old HX711); white (S-) wire broken on the
+//               new board (16 Nov): raw 4400..5700, box or not. The cell's own zero is
+//               ~575 000 on both boards (the offset belongs to the bridge, not the HX711).
+//               Needs |tare offset| > OPEN_MIN_OFFSET,
 //               so a cell whose natural zero happens to be near 0 can't use this check.
 //  Each needs to persist (a few samples / ~1 s) before it counts, so a single
 //  odd conversion never trips the SLI.

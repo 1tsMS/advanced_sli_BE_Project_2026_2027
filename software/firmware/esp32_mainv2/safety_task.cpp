@@ -18,7 +18,7 @@ static LoadChart    _chart;                 // active chart, valid only if _char
 static bool         _chartValid  = false;
 static uint32_t     _chartSeq    = 0;       // bumped on every commit
 static uint8_t      _blocked     = 0xFF;    // nothing allowed until the first evaluation
-static uint8_t      _limits      = 0;       // travel limits (end stops): enforced in every mode
+static uint8_t      _limits      = 0;       // travel limits (end stops): enforced while the SLI is armed
 static SliState     _state       = SLI_FAULT;
 static bool         _estop       = false;
 static bool         _bypass      = false;
@@ -68,8 +68,8 @@ bool safety_motionAllowed(uint8_t axis, uint8_t dir, const char** reason) {
     taskEXIT_CRITICAL(&_mux);
 
     if (estop)  { *reason = "ESTOP"; return false; }   // E-stop latch holds in every mode
-    if (limits & sli_bit(axis, dir)) { *reason = "TRAVEL"; return false; }   // end stop: every mode too
-    if (bypass || off) return true;
+    if (bypass || off) return true;                    // operator took over: end stops too (MS, 16 Nov)
+    if (limits & sli_bit(axis, dir)) { *reason = "TRAVEL"; return false; }
     if (blocked & sli_bit(axis, dir)) {
         // CUT/FAULT name the state; OK/WARN means a predictive cut or chart edge
         *reason = (state == SLI_CUT || state == SLI_FAULT) ? sli_stateName(state) : "LIMIT";

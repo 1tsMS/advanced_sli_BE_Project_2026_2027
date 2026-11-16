@@ -99,8 +99,8 @@ void TelemetryFormatter::formatDebugReport(
                diag.boomFromEncoder ? "ENC" : "IMU", diag.boomCalibrated ? "OK" : "UNCAL");
     DBG_APPEND("$D,AXIS_TELE,inv:%u scale:%.4f,OK\n",
                diag.enc[ENC_TELE].inverted ? 1u : 0u, diag.teleScale);
-    DBG_APPEND("$D,AXIS_ROPE,inv:%u scale:%.6f counts:%ld,OK\n",
-               diag.ropeInverted ? 1u : 0u, diag.ropeScale, (long)diag.ropeCounts);
+    DBG_APPEND("$D,AXIS_ROPE,inv:%u scale:%.6f counts:%ld knot:%.1f,OK\n",
+               diag.ropeInverted ? 1u : 0u, diag.ropeScale, (long)diag.ropeCounts, diag.ropeKnot);
 
     DBG_APPEND("$D,LOAD_CAL,scale:%.1f points:%u phi:%.2f ang:%u,%s\n",
                diag.loadScale, (unsigned)diag.loadPoints, diag.loadAnglePhi, diag.loadAngleOn ? 1u : 0u,

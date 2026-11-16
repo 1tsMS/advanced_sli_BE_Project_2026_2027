@@ -36,8 +36,14 @@ export interface RulerAxisConfig {
   save: (scale: number, invert: boolean, value?: number) => Promise<{ ok: boolean; msg: string }>;
 }
 
-// config.h ROPE_FIXED_PATH_MM + ROPE_KNOT_TO_HOOK_MM: ropeTotal = drum-side rope + this
-const ROPE_TOTAL_EXTRA_MM = BOOM_BASE_MM + BOOM_HEAD_MM + ROPE_KNOT_TO_HOOK_MM;   // 288 + 76
+// config.h ROPE_FIXED_PATH_MM: bearing centre to the load-cell edge
+const ROPE_FIXED_PATH_MM = BOOM_BASE_MM + BOOM_HEAD_MM;   // 288
+
+/** Knot to hook (mm) the ESP32 uses right now: hookDrop - ropeLength. null = old firmware / no frame. */
+export const ropeKnotMm = (f: TelemetryFrame | null | undefined) =>
+  f && f.hookDrop > 0 ? f.hookDrop - f.ropeLength : null;
+
+export const saveRopeKnot = (mm: number) => apiPost("/calibrate/rope-knot", { mm });
 
 async function apiPost(path: string, body: object = {}) {
   try {
@@ -53,7 +59,7 @@ async function apiPost(path: string, body: object = {}) {
   }
 }
 
-import { TELE_RETRACTED_MM, BOOM_BASE_MM, BOOM_HEAD_MM, ROPE_KNOT_TO_HOOK_MM } from "../../geometry";
+import { TELE_RETRACTED_MM, BOOM_BASE_MM, BOOM_HEAD_MM } from "../../geometry";
 
 export const TELE_RULER: RulerAxisConfig = {
   key: "tele",
@@ -98,7 +104,11 @@ export const ROPE_RULER: RulerAxisConfig = {
   motorAxis: 4, outDir: 1, outLabel: "Pay out ▼", inLabel: "▲ Wind up",
   value: f => f?.ropeLength ?? 0,
   // ropeLength subtracts the rope the telescope pulled over the tip; the encoder doesn't see that
-  stepValue: f => (f && f.ropeTotal > 0 ? f.ropeTotal - ROPE_TOTAL_EXTRA_MM : f?.ropeLength ?? 0),
+  // drum-side rope = ropeTotal - 288 - knot (knot read back from the frame, so it follows CAL6 K)
+  stepValue: f => {
+    const knot = ropeKnotMm(f);
+    return f && f.ropeTotal > 0 && knot !== null ? f.ropeTotal - ROPE_FIXED_PATH_MM - knot : f?.ropeLength ?? 0;
+  },
   fitOffset: true,
   zero: () => apiPost("/calibrate/encoder", { axis: "rope", value: 0 }),
   save: (scale, invert, value) => apiPost("/calibrate/rope", { scale, invert, value }),

@@ -48,6 +48,7 @@ struct SensorDiag {
     int32_t ropeCounts;         // N20 counts since the rope reference (direction-corrected)
     float   ropeScale;          // mm per N20 count
     bool    ropeInverted;
+    float   ropeKnot;           // knot to hook curve, mm (CAL6 K)
     bool    boomCalibrated;     // boom encoder zeroed (CAL4 A2) -> boom angle comes from it
     bool    boomFromEncoder;    // boom angle source right now
     float   loopAvgMs;          // SensorTask work time per cycle

@@ -8,7 +8,7 @@
  */
 export const BOOM_BASE_MM = 225;     // bearing centre to the end of the boom / telescope tube
 export const BOOM_HEAD_MM = 63;      // new head (load cell, IMU + HX711 board): boom end to the load-cell edge
-export const ROPE_KNOT_TO_HOOK_MM = 76;   // knot to the hook curve (firmware config.h)
+export const ROPE_KNOT_TO_HOOK_MM = 76;   // knot to the hook curve: default only, the ESP32 keeps the real one (CAL6 K)
 export const TELE_RETRACTED_MM = 0;  // telescope reading when fully retracted
 
 /** Pivot to the rope / hook point (mm) for a telescope extension. */

@@ -65,6 +65,14 @@ static void test_unplugged_cell_reads_near_zero() {
     CHECK(m.health() == LC_HEALTH_OK);           // under 1 s: not yet
     m.push(2190, (2190 - zero) / SCALE, zero);
     CHECK(m.health() == LC_HEALTH_OPEN);
+    // New board, 16 Nov: white (S-) wire broken -> raw 4400..5700 against the cell's zero 574841
+    LoadCellMonitor w;
+    for (int i = 0; i < 10; i++) w.push(4400 + i * 130, (4400 + i * 130 - 574841) / SCALE, 574841);
+    CHECK(w.health() == LC_HEALTH_OPEN);
+    // Same cell fixed, box hanging: raw ~1024500 -> OK
+    LoadCellMonitor f;
+    for (int i = 0; i < 40; i++) f.push(1022447 + (i % 7) * 650, (1022447 - 574841) / SCALE, 574841);
+    CHECK(f.health() == LC_HEALTH_OK);
     // A cell whose own zero is near 0 can't be told apart: never flagged
     LoadCellMonitor n;
     for (int i = 0; i < 40; i++) n.push(2180 + (i % 5) * 10, 0.0f, 3000);

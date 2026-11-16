@@ -4,7 +4,7 @@ import { CalSteps } from "./CalSection";
 import type { DebugReport, TelemetryFrame } from "../../types";
 import { encoderDiag } from "./encoderDiag";
 import { useHoldToMove } from "../../hooks/useHoldToMove";
-import type { RulerAxisConfig } from "./rulerAxes";
+import { ropeKnotMm, saveRopeKnot, type RulerAxisConfig } from "./rulerAxes";
 
 interface RulerCalProps {
   cfg: RulerAxisConfig;
@@ -54,6 +54,17 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
   const [manualInvert, setManualInvert] = useState<boolean | null>(null);
   const [jogSpeed, setJogSpeed] = useState(1000);
   const [joggingDir, setJoggingDir] = useState<0 | 1 | null>(null);
+  const [knotMm, setKnotMm] = useState("");
+  const espKnot = cfg.key === "rope" ? ropeKnotMm(frame) : null;
+
+  const saveKnot = async () => {
+    const mm = parseFloat(knotMm);
+    if (!Number.isFinite(mm) || mm < 0 || mm > 500) { onLog("⚠ Knot to hook must be 0-500 mm", "err"); return; }
+    onLog(`→ Knot to hook: ${mm.toFixed(1)} mm`, "info");
+    const r = await saveRopeKnot(mm);
+    onLog(`← ${r.msg}`, r.ok ? "ack" : "err");
+    if (r.ok) setKnotMm("");
+  };
 
   // The ESP32's flash is the only source of truth for scale / direction
   const axis = encoderDiag(debugReport, cfg.diagTag).axis;
@@ -261,6 +272,30 @@ export function RulerCal({ cfg, frame, debugReport, onScan, onLog }: RulerCalPro
             </button>
           </div>
         </div>
+
+        {cfg.key === "rope" && (
+          <div className="tele-section-card">
+            <div className="tele-section-title">
+              <span>Knot to hook (fixed)</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-xs)", color: "var(--text-muted)" }}>
+                {espKnot !== null ? `ESP32: ${espKnot.toFixed(1)} mm` : "ESP32: –"}
+              </span>
+            </div>
+            <div className="tele-input-row">
+              <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-secondary)" }}>Knot to hook curve</span>
+              <input type="number" step="0.5" className="tele-input" value={knotMm}
+                     placeholder={espKnot !== null ? espKnot.toFixed(1) : "76"}
+                     aria-label="Knot to hook curve distance"
+                     onChange={e => setKnotMm(e.target.value)}
+                     onKeyDown={e => { if (e.key === "Enter") saveKnot(); }} />
+              <span style={{ fontSize: "var(--fs-sm)", color: "var(--text-muted)" }}>mm</span>
+              <button className="btn-primary" onClick={saveKnot} style={{ marginLeft: "auto", padding: "5px 12px" }}
+                      title="Saved on the ESP32: hook drop = rope + this, rope total = rope + 288 mm + this">
+                <Save size={10} /> Save
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="tele-section-card">
           <div className="tele-section-title">
