@@ -24,28 +24,6 @@ bool MPU6050Driver::configure() {
            _bus->writeReg(_addr, REG_ACCEL_CONFIG, 0x10);     // +/-8 g
 }
 
-int8_t MPU6050Driver::configState() {
-    uint8_t c[4], pwr;
-    if (!_bus->readRegs(_addr, REG_SMPLRT_DIV, c, 4) || !_bus->readRegs(_addr, REG_PWR_MGMT_1, &pwr, 1)) return -1;
-    return (c[0] == 0x00 && c[1] == 0x04 && c[2] == 0x08 && c[3] == 0x10 && pwr == 0x01) ? 1 : 0;
-}
-
-// The registers are only REWRITTEN when two read-backs in a row say they are wrong
-// (the MPU browned out and reset to sleep, or noise corrupted a register). Rewriting
-// blindly under noise was worse than the dropout: a corrupted write can land a wrong
-// range in ACCEL_CONFIG / GYRO_CONFIG, and the old code did that 130 times in one lift.
-void MPU6050Driver::checkConfig(uint32_t nowMs) {
-    const bool stale = (nowMs - _lastGoodMs) >= CHECK_STALE_MS;
-    if (nowMs - _lastCheckMs < (stale ? CHECK_STALE_MS : CHECK_IDLE_MS)) return;
-    _lastCheckMs = nowMs;
-    if (stale) _bus->recoverBus();               // a slave stuck mid-byte holds SDA low
-    const int8_t s = configState();
-    if (s != 0) { _cfgMismatch = 0; return; }    // fine, or unreadable right now
-    if (++_cfgMismatch < 2) return;
-    _cfgMismatch = 0;
-    if (configure()) _reconnects++;
-}
-
 bool MPU6050Driver::begin() {
     if (!_bus) return false;
     const uint8_t addrs[2] = { 0x68, 0x69 };   // AD0 low / high
@@ -58,14 +36,13 @@ bool MPU6050Driver::begin() {
             delay(10);
             if (configure()) {
                 delay(50);                       // let the DLPF settle
-                _present = true;
-                _lastGoodMs = millis();
+                _connected = true;
                 _lastUpdateUs = micros();
                 return true;
             }
         }
     }
-    _present = false;
+    _connected = false;
     return false;
 }
 
@@ -83,25 +60,28 @@ bool MPU6050Driver::readSample(float* ax, float* ay, float* az, float* gx, float
 }
 
 void MPU6050Driver::update() {
-    const uint32_t nowMs = millis();
-    if (!_present) {
-        // Never answered at boot: retry every 0.5 s (a few register writes, < 2 ms)
-        if (nowMs - _lastReconnectMs < 500) return;
-        _lastReconnectMs = nowMs;
+    if (!_connected) {
+        // Cheap re-init every 0.5 s (a few register writes, < 2 ms)
+        if (millis() - _lastReconnectMs < 500) return;
+        _lastReconnectMs = millis();
         if (configure()) {
-            _present = true;
+            _connected = true;
             _reconnects++;
-            _lastGoodMs = nowMs;
             _lastUpdateUs = micros();
         }
         return;
     }
-    checkConfig(nowMs);
 
-    // A failed or corrupted transfer is just skipped: the next one is 10 ms away.
-    // isConnected() goes false by itself if nothing good arrives for STALE_MS.
     float ax, ay, az, gx, gy, gz;
-    if (!readSample(&ax, &ay, &az, &gx, &gy, &gz)) return;
+    if (!readSample(&ax, &ay, &az, &gx, &gy, &gz)) {
+        // A single noisy transfer shouldn't kill the IMU feed
+        if (++_consecutiveFails >= 3) {
+            _connected = false;
+            _consecutiveFails = 0;
+        }
+        return;
+    }
+    _consecutiveFails = 0;
 
     // Plausibility check: noise can corrupt bytes in a transfer that still "succeeds".
     // The crane moves slowly, so far from 1 g or a huge rotation rate = garbage: skip it.
@@ -125,7 +105,6 @@ void MPU6050Driver::update() {
     _gyroStepRun = 0;
     _prevGx = gx; _prevGy = gy; _prevGz = gz;
     _hasPrevGyro = true;
-    _lastGoodMs = nowMs;
 
     // Non-blocking calibration in progress: collect instead of filtering
     if (_calTarget) {
@@ -182,7 +161,7 @@ bool MPU6050Driver::takeGyroCalibrationDone() {
 }
 
 void MPU6050Driver::calibrateGyro(uint16_t samples) {
-    if (!_present) return;
+    if (!_connected) return;
     CalSums c;
     for (uint16_t i = 0; i < samples; i++) {
         float ax, ay, az, gx, gy, gz;

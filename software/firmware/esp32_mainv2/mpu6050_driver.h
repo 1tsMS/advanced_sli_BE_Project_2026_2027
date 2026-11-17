@@ -24,10 +24,7 @@ public:
     /** Probe 0x68 / 0x69, check WHO_AM_I and configure. Call in setup(). */
     bool begin();
 
-    /** Found at boot AND a good sample in the last STALE_MS. A burst of corrupted
-     *  transfers shorter than that is ridden through on the last angle (the boom moves
-     *  ~1.5 deg/s, so < 1 deg); longer = fault. */
-    bool isConnected() const { return _present && (millis() - _lastGoodMs) < STALE_MS; }
+    bool isConnected() const { return _connected; }
 
     /** Read one sample and update the filter. Call at 100 Hz. */
     void update();
@@ -64,14 +61,7 @@ public:
 private:
     SoftI2C* _bus;
     uint8_t  _addr = 0x68;
-    bool     _present = false;        // answered at boot (or a later retry)
-    uint32_t _lastGoodMs = 0;         // last sample that passed every check
-
-    static constexpr uint32_t STALE_MS       = 500;    // no good sample for this long = not connected
-    static constexpr uint32_t CHECK_STALE_MS = 100;    // config read-back period while stale
-    static constexpr uint32_t CHECK_IDLE_MS  = 1000;   // ... and while healthy
-    uint32_t _lastCheckMs = 0;
-    uint8_t  _cfgMismatch = 0;        // consecutive read-backs that differed
+    bool     _connected = false;
 
     ImuFilter       _filter;
     ImuFilterOutput _out = {};
@@ -80,7 +70,8 @@ private:
     uint32_t _lastUpdateUs = 0;
 
     uint32_t _lastReconnectMs  = 0;
-    uint32_t _reconnects = 0;     // config rewrites (the MPU reset, or a register got corrupted)
+    uint8_t  _consecutiveFails = 0;
+    uint32_t _reconnects = 0;     // re-inits after dropouts
     uint32_t _rejected   = 0;     // implausible (corrupted) samples skipped
     float    _rawRoll = 0.0f, _rawPitch = 0.0f;
     uint32_t _samples = 0;
@@ -109,9 +100,6 @@ private:
     void finishCalibration(const CalSums& c);
 
     bool configure();
-    /** Read the config registers back: 1 = as written, 0 = different, -1 = read failed. */
-    int8_t configState();
-    void   checkConfig(uint32_t nowMs);
     /** Read accel + gyro (raw sensor units -> m/s^2, deg/s without offsets). */
     bool readSample(float* ax, float* ay, float* az, float* gx, float* gy, float* gz);
 };

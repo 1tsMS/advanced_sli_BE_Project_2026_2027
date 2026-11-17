@@ -69,6 +69,18 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
   const angAck = lastAck && lastAck.startsWith("$ACK,CAL9") ? lastAck : null;
   const angKv = kv(angAck);
   const angMeasuring = !!angAck && angAck.includes("MEASURING");
+  // CAL9 errors in words. A refused capture never deletes the angles already captured.
+  const angErrText = (a: string): string | null => {
+    if (!a.includes(",ERR")) return null;
+    const kept = a.match(/KEPT:(\d+)/)?.[1];
+    const keptTxt = kept !== undefined ? ` The ${kept} angle point(s) already captured are kept.` : "";
+    if (a.includes("NO_BOOM_ANGLE")) return `Not captured: the IMU dropped out (12 V noise) at the end of the 2 s average.${keptTxt} Press Capture again.`;
+    if (a.includes("MOVED"))         return `Not captured: the boom moved during the 2 s average.${keptTxt} Hold still and capture again.`;
+    if (a.includes("NO_LOAD_SEEN"))  return `Not captured: the load cell sees no weight. Tare with the hook empty, hang the weight, then capture.${keptTxt}`;
+    if (a.includes("BUSY"))          return "Not captured: a measurement is still running. Wait 2 s and press again.";
+    if (a.includes("TIMEOUT"))       return `Not captured: the load cell gave no readings for 5 s (check the HX711).${keptTxt}`;
+    return a.replace("$ACK,CAL9,", "");
+  };
   const sendAng = async (cmd: string, what: string) => {
     setBusy(true);
     onLog(`→ ${what}`, "info");
@@ -208,7 +220,7 @@ export function LoadCal({ frame, debugReport, lastAck, onScan, onLog }: LoadCalP
             <div className="cal-item-status" style={{ color: angAck.includes(",ERR") ? "var(--amber)" : "var(--cyan)" }}>
               {angAck.includes(",OK,")
                 ? `phi ${angKv.PHI}° · ${angKv.SCALE} counts/kg from ${angKv.N} angle(s) · worst error ${angKv.WORST_ERR_G} g`
-                : angAck.replace("$ACK,CAL9,", "")}
+                : angErrText(angAck) ?? angAck.replace("$ACK,CAL9,", "")}
             </div>
           )}
         </div>

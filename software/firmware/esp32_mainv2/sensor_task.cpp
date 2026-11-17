@@ -84,6 +84,9 @@ static uint8_t _angCalN = 0;
 static bool    _angCalPending = false;
 static float   _angCalPendingKg = 0.0f;
 static uint32_t _angCalStartMs = 0;
+static float   _angCalStartBoom = NAN;   // boom angle when the capture started (moved = reject)
+static const uint32_t ANGCAL_IMU_HOLD_MS = 1500;   // a dropout shorter than this still has a valid angle
+static const float    ANGCAL_MOVE_DEG    = 1.0f;   // boom may not move more than this during a capture
 
 // Smoothed corrected load (load_filter.h). Reset after a tare / scale change so it jumps to the new value.
 static LoadFilter _loadFilter;
@@ -528,6 +531,7 @@ static void runCal(const CalRequest& req) {
             _angCalPending   = true;
             _angCalPendingKg = req.value;
             _angCalStartMs   = millis();
+            _angCalStartBoom = NAN;
             serialLine("$ACK,CAL9,MEASURING,KG:%.3f", req.value);
             return;
         }
@@ -742,8 +746,9 @@ void sensorTask(void* pvParameters) {
         // reports 0 - offset, so hold the last good angles instead of passing that on.
         // sensorsOK goes false meanwhile, so the hold is never silent.
         static float heldImuBoom = 0.0f, heldImuTilt = 0.0f;
+        static uint32_t imuOkMs = 0;            // last cycle with a good IMU angle (CAL9 capture)
         const bool imuOK = hw.imuOK;
-        if (imuOK) { heldImuBoom = hw.imuBoom; heldImuTilt = hw.imuTilt; }
+        if (imuOK) { heldImuBoom = hw.imuBoom; heldImuTilt = hw.imuTilt; imuOkMs = millis(); }
         const float imuBoom = heldImuBoom;
         const float imuTilt = heldImuTilt;
 
@@ -816,13 +821,22 @@ void sensorTask(void* pvParameters) {
         }
 
         if (_angCalPending && _loadCell) {
+            // EMI dropouts on the boom-tip bus are common with the 12 V on. The boom stands
+            // still during a capture, so the last good angle (held) is valid for a short
+            // dropout; a capture is only refused if the angle is old or the boom moved.
+            // A refused capture never touches the points already captured.
+            const bool angleOK = boomEncOK || imuOK || (millis() - imuOkMs < ANGCAL_IMU_HOLD_MS);
+            if (angleOK && !isfinite(_angCalStartBoom)) _angCalStartBoom = boom;
             double counts;
             if (_loadCell->takeAverageDone(&counts)) {
                 _angCalPending = false;
                 if (fabs(counts) < 1000.0) {
-                    serialLine("$ACK,CAL9,ERR,NO_LOAD_SEEN (tare first, then hang the weight)");
-                } else if (!(boomEncOK || imuOK)) {
-                    serialLine("$ACK,CAL9,ERR,NO_BOOM_ANGLE");
+                    serialLine("$ACK,CAL9,ERR,NO_LOAD_SEEN,KEPT:%u (tare first, then hang the weight)", _angCalN);
+                } else if (!angleOK) {
+                    serialLine("$ACK,CAL9,ERR,NO_BOOM_ANGLE,KEPT:%u (IMU dropout > 1.5 s, press Capture again)", _angCalN);
+                } else if (isfinite(_angCalStartBoom) && fabsf(boom - _angCalStartBoom) > ANGCAL_MOVE_DEG) {
+                    serialLine("$ACK,CAL9,ERR,MOVED,KEPT:%u (boom moved %.1f deg, hold still and capture again)",
+                               _angCalN, fabsf(boom - _angCalStartBoom));
                 } else {
                     // Same boom angle (within 1 deg) replaces that point, else append
                     uint8_t slot = _angCalN;
