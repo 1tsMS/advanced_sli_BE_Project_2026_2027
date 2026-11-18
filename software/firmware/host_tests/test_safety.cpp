@@ -112,7 +112,8 @@ static void test_zones() {
 static void test_fault() {
     SafetyResult r = sli_evaluate(nullptr, pose(10, 40, 0, 0.1f), SLI_OK);
     CHECK(r.state == SLI_FAULT);
-    CHECK(!blocked(r, 2, 1) && !blocked(r, 3, 0) && !blocked(r, 4, 1));   // boom up, retract, pay out
+    CHECK(!blocked(r, 3, 0) && !blocked(r, 4, 1));                        // retract, pay out
+    CHECK(blocked(r, 2, 1));                                              // no chart: boom up unknown -> cut
     CHECK(!blocked(r, 2, 0));                                             // boom down: never cut
     CHECK(blocked(r, 3, 1) && blocked(r, 4, 0));                          // extend, hoist
     CHECK(blocked(r, 1, 0) && blocked(r, 1, 1));                          // swing
@@ -262,15 +263,21 @@ static void test_cut_modes() {
     const float limit = 6.667f;
     const float pred  = boomUpCutAt(c, SLI_CUT_PREDICTIVE, 2.0f);
     const float react = boomUpCutAt(c, SLI_CUT_REACTIVE, 2.0f);
-    const float slow  = boomUpCutAt(c, SLI_CUT_SPEED, 2.0f);    // 2 deg/s x 0.25 s = 0.5 deg < 1 deg step
-    const float fast  = boomUpCutAt(c, SLI_CUT_SPEED, 12.0f);   // 12 deg/s x 0.25 s = 3 deg ahead
-    CHECK_NEAR(pred, limit - SLI_LOOK_BOOM_DEG, 0.06);          // one step early
+    // SPEED: look-ahead = margin + v x T
+    const float creep = boomUpCutAt(c, SLI_CUT_SPEED, 0.3f);    // 0.25 + 0.15 = 0.4 deg ahead
+    const float real  = boomUpCutAt(c, SLI_CUT_SPEED, 1.8f);    // 0.25 + 0.9  = 1.15 deg (crane's boom speed)
+    const float fast  = boomUpCutAt(c, SLI_CUT_SPEED, 4.0f);    // 0.25 + 2.0  = 2.25 deg
+    CHECK_NEAR(pred, limit - SLI_LOOK_BOOM_DEG, 0.06);          // one fixed step early
     CHECK(react >= limit - 0.01f && react < limit + 0.06f);      // only once 100 % is reached
-    CHECK_NEAR(slow, pred, 0.06);                               // slow: same as the fixed step
-    CHECK_NEAR(fast, limit - 12.0f * SLI_LOOK_TIME_S, 0.06);    // fast: 3 deg early
+    CHECK_NEAR(creep, limit - (SLI_SPEED_MARGIN_BOOM_DEG + 0.3f * SLI_LOOK_TIME_S), 0.06);
+    CHECK_NEAR(real,  limit - (SLI_SPEED_MARGIN_BOOM_DEG + 1.8f * SLI_LOOK_TIME_S), 0.06);
+    CHECK_NEAR(fast,  limit - (SLI_SPEED_MARGIN_BOOM_DEG + 4.0f * SLI_LOOK_TIME_S), 0.06);
+    CHECK(creep > pred && fast < pred);                          // slow gets closer than P, fast stops earlier
 
-    // Moving AWAY from the limit never widens the look-ahead (boom going down fast)
-    CHECK_NEAR(boomUpCutAt(c, SLI_CUT_SPEED, -12.0f), pred, 0.06);
+    // Moving AWAY from the limit (or standing still) leaves only the margin
+    const float away = boomUpCutAt(c, SLI_CUT_SPEED, -12.0f);
+    CHECK_NEAR(away, limit - SLI_SPEED_MARGIN_BOOM_DEG, 0.06);
+    CHECK_NEAR(boomUpCutAt(c, SLI_CUT_SPEED, 0.0f), away, 0.01f);
 
     // In every mode the recovering direction stays free at and beyond the limit
     for (SliCutMode m : { SLI_CUT_PREDICTIVE, SLI_CUT_REACTIVE, SLI_CUT_SPEED }) {
@@ -288,6 +295,51 @@ static void test_cut_modes() {
     CHECK(!blocked(sli_evaluate(&c, in, SLI_WARN), 2, 1));
     CHECK(sli_cutModeLetter(SLI_CUT_REACTIVE) == 'R' && sli_cutModeLetter(SLI_CUT_SPEED) == 'S' &&
           sli_cutModeLetter(SLI_CUT_PREDICTIVE) == 'P');
+}
+
+/** FAULT must never free a direction the chart can't prove safe (MS, 18 Nov:
+ *  CUT -> IMU dropout -> FAULT unlocked boom up past the limit). */
+static void test_fault_from_chart() {
+    // This crane: capacity FALLS with boom angle -> boom up is the critical direction
+    const LoadChart fall = fallingChart();
+    SafetyInputs in = pose(7.0f, 40, 0, 1.0f);
+    in.sensorsOK = false;
+    const SafetyResult f = sli_evaluate(&fall, in, SLI_CUT);
+    CHECK(f.state == SLI_FAULT);
+    CHECK(blocked(f, 2, 1));                                  // boom up cut
+    CHECK(!blocked(f, 2, 0));                                 // boom down free (SLI_BOOM_DOWN_ALWAYS)
+    CHECK(!blocked(f, 3, 0) && blocked(f, 3, 1));             // retract free, extend cut
+    CHECK(!blocked(f, 4, 1 - SLI_WINCH_HOIST_DIR) && blocked(f, 4, SLI_WINCH_HOIST_DIR));
+    CHECK(blocked(f, 1, 0) && blocked(f, 1, 1));              // swing cut
+    // Real-crane chart: capacity RISES with angle -> boom up provably never worse
+    const LoadChart rise = buildChart();
+    const SafetyResult g = sli_evaluate(&rise, in, SLI_OK);
+    CHECK(g.state == SLI_FAULT && !blocked(g, 2, 1) && !blocked(g, 3, 0));
+    // A chart where capacity rises with extension somewhere: retract not proven safe
+    LoadChart odd = rise;
+    odd.capKg[2][0] = odd.capKg[2][1] - 0.05f;               // 20 mm below 40 mm: retract can lose capacity
+    CHECK(blocked(sli_evaluate(&odd, in, SLI_OK), 3, 0));
+}
+
+/** Grace: a short pose dropout from OK keeps the last decision; everything else strict. */
+static void test_fault_grace() {
+    const uint8_t strict = (uint8_t)~(sli_bit(3, 0) | sli_bit(4, 1));   // FAULT: retract + pay out only
+    const uint8_t lastOk = 0;                                         // OK, nothing cut
+    // OK before, IMU only, 1 s: crane keeps running as before
+    CHECK(sli_faultBlocked(strict, lastOk, SLI_OK, 1000, true) == lastOk);
+    CHECK(sli_faultBlocked(strict, lastOk, SLI_OK, SLI_FAULT_GRACE_MS, true) == lastOk);
+    // Longer than the grace: strict
+    CHECK(sli_faultBlocked(strict, lastOk, SLI_OK, SLI_FAULT_GRACE_MS + 1, true) == strict);
+    // WARN or CUT before the dropout: strict, and the old cuts stay cut
+    const uint8_t cutUp = sli_bit(2, 1);
+    CHECK(sli_faultBlocked(strict, 0, SLI_WARN, 100, true) == strict);
+    CHECK(sli_faultBlocked(0, cutUp, SLI_CUT, 100, true) == cutUp);
+    // Load cell (not pose-only): strict even from OK
+    CHECK(sli_faultBlocked(strict, lastOk, SLI_OK, 100, false) == strict);
+    // No valid evaluation yet (boot): strict
+    CHECK(sli_faultBlocked(strict, lastOk, SLI_FAULT, 100, true) == strict);
+    // Grace never frees what was cut while OK (e.g. a chart edge)
+    CHECK(sli_faultBlocked(strict, cutUp, SLI_OK, 100, true) == cutUp);
 }
 
 static void test_boom_travel_limit() {
@@ -320,5 +372,7 @@ int main() {
     test_lift_until_limit();
     test_cut_modes();
     test_boom_travel_limit();
+    test_fault_from_chart();
+    test_fault_grace();
     return check_summary("safety");
 }

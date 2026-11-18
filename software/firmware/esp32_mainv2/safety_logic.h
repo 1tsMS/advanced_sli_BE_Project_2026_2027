@@ -18,14 +18,16 @@
 //    PREDICTIVE  fixed look-ahead step per axis (SLI_LOOK_*)
 //    REACTIVE    no look-ahead: a direction is cut only once the load % is
 //                already at or above the cut threshold (classic limiter)
-//    SPEED       look-ahead = max(fixed step, axis speed x SLI_LOOK_TIME_S):
-//                a fast axis is stopped earlier, so it lands before the limit
+//    SPEED       look-ahead = margin + axis speed x SLI_LOOK_TIME_S (ISO/TS 15066
+//                protective-distance form): fast stops earlier, slow gets closer
 //  Hoisting (winch up) is the one motion the geometry can't predict: it is cut
 //  while the state is CUT.
 //
 //  FAULT (no valid chart, a sensor down, load reading invalid): we can't know
-//  the load moment, so only the motions that always reduce it are allowed:
-//  boom up, retract, winch pay out (+ boom down, see SLI_BOOM_DOWN_ALWAYS).
+//  the load moment, so only the motions that can never make it worse are allowed:
+//  winch pay out, retract (unless the chart says otherwise), boom up ONLY if the
+//  chart's capacity never falls with angle (+ boom down, see SLI_BOOM_DOWN_ALWAYS).
+//  SafetyTask also keeps every direction the last valid evaluation had cut.
 // ============================================================
 #ifndef SAFETY_LOGIC_H
 #define SAFETY_LOGIC_H
@@ -68,10 +70,19 @@ enum SliState : uint8_t {
 #define SLI_LOOK_BOOM_DEG   1.0f
 #define SLI_LOOK_EXT_MM     2.0f
 #define SLI_LOOK_SWING_DEG  3.0f
-// SPEED mode: distance covered in this time is looked ahead. It covers the cut
-// path (SafetyTask period 20 ms + command + UART + Mega, ~30 ms) and the IMU
-// filter lag on the boom angle; tune it from the E5 overshoot data.
-#define SLI_LOOK_TIME_S     0.25f
+// SPEED mode: look-ahead = margin + speed x SLI_LOOK_TIME_S, the protective-distance
+// form of ISO/TS 15066 speed-and-separation monitoring (uncertainty + v x stop time).
+// The margin is the measurement uncertainty (E2: IMU within 0.2-0.5 deg of the
+// reference), much smaller than PREDICTIVE's fixed step, so a slow approach gets
+// closer to the limit than PREDICTIVE and a fast one stops earlier. The time covers
+// the cut path (SafetyTask 20 ms + command + UART + Mega, ~30 ms), the IMU filter and
+// the 0.1 s rate smoothing, with margin. At the crane's 1.8 deg/s boom speed it looks
+// ~1.15 deg ahead (about PREDICTIVE), 0.4 deg at 0.3 deg/s, 2.25 deg at 4 deg/s.
+// (Was max(fixed step, v x 0.25 s): at real boom speeds it never left the fixed step.)
+#define SLI_LOOK_TIME_S             0.5f
+#define SLI_SPEED_MARGIN_BOOM_DEG   0.25f
+#define SLI_SPEED_MARGIN_EXT_MM     0.5f
+#define SLI_SPEED_MARGIN_SWING_DEG  1.0f
 
 enum SliCutMode : uint8_t {
     SLI_CUT_PREDICTIVE = 0,
@@ -129,6 +140,21 @@ uint8_t sli_travelLimits(const SafetyInputs& in);
  * prev = the state returned last time (for hysteresis).
  */
 SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliState prev);
+
+// FAULT grace (MS, 18 Nov): a short POSE dropout (IMU / mutex) while the last valid
+// state was OK keeps the last valid decision instead of stopping the crane. From
+// OK the load % is below WARN, and at the crane's ~1.8 deg/s the boom moves about
+// 5 deg in 3 s, which can't reach CUT on its charts. A load-cell fault, WARN/CUT
+// before the dropout, or a dropout longer than this: strict FAULT.
+#define SLI_FAULT_GRACE_MS  3000u
+
+/**
+ * Blocked mask while in FAULT. strict = sli_evaluate's FAULT mask; lastValid* =
+ * the last non-FAULT evaluation; poseOnly = only the pose is unknown (load fine).
+ * Never frees a direction the last valid evaluation had cut.
+ */
+uint8_t sli_faultBlocked(uint8_t strict, uint8_t lastValidBlocked, SliState lastValidState,
+                         uint32_t msSinceValid, bool poseOnly);
 
 const char* sli_stateName(SliState s);
 const char* sli_reasonName(SliReason r);

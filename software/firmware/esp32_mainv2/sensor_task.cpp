@@ -95,6 +95,10 @@ static LoadFilter _loadFilter;
 // Static noise of the raw accel angle is ~0.1-0.3 deg, so 2 deg is clearly EMI.
 static const float IMU_SPIKE_DEG = 2.0f;
 
+// IMU counts as down when no sample has been accepted for this long (20 samples at
+// 100 Hz). Normal rejects are single samples; a longer gap means the angle is frozen.
+static const uint32_t IMU_STALE_MS = 200;
+
 // ---- Bus task (HwBusTask, core 0): bus 0 MPU6050, bus 1 boom AS5600, bus 3 swing AS5600 ----
 // Bit-banged I2C busy-waits, so these three sensors are read on core 0 and only
 // their raw results are handed over here. Noise on the long boom-tip cable then
@@ -617,7 +621,14 @@ void sensorTask_hwBus(void* pvParameters) {
 
         // MPU6050 on the boom (filter inside the driver, see imu_filter.h)
         if (_imu) _imu->update();
-        const bool  imuOK    = _imu && _imu->isConnected();
+        // OK = connected AND a sample was ACCEPTED recently. Reads that succeed but are
+        // rejected as corrupt (EMI bursts: up to ~0.5 s, 17 Nov) never trip isConnected(),
+        // they just freeze the angle; the SLI must not trust a frozen angle (MS, 18 Nov).
+        // Only the OK flag changes here: the driver's re-init path is the 9 Nov code (F15).
+        static uint32_t okSampleSeen = 0, okSampleMs = 0;
+        if (_imu && _imu->sampleCount() != okSampleSeen) { okSampleSeen = _imu->sampleCount(); okSampleMs = millis(); }
+        const bool  imuFresh = okSampleMs != 0 && (millis() - okSampleMs) <= IMU_STALE_MS;
+        const bool  imuOK    = _imu && _imu->isConnected() && imuFresh;
         const float mpuRoll  = imuOK ? _imu->getRoll()  : 0.0f;
         const float mpuPitch = imuOK ? _imu->getPitch() : 0.0f;
         const float boomBase = (_boomSource == 1) ? mpuPitch : mpuRoll;
@@ -742,8 +753,8 @@ void sensorTask(void* pvParameters) {
         stageEnd(STAGE_CAL, st);
 
         // ---- IMU angles from the bus task ----
-        // While the IMU is stale (imuOK false: no good sample for 500 ms) the bus task
-        // reports 0 - offset, so hold the last good angles instead of passing that on.
+        // While the IMU is down (imuOK false: disconnected, or no accepted sample for
+        // IMU_STALE_MS) the bus task reports 0 - offset, so hold the last good angles.
         // sensorsOK goes false meanwhile, so the hold is never silent.
         static float heldImuBoom = 0.0f, heldImuTilt = 0.0f;
         static uint32_t imuOkMs = 0;            // last cycle with a good IMU angle (CAL9 capture)

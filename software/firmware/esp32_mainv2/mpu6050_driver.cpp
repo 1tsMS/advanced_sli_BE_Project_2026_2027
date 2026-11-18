@@ -61,8 +61,9 @@ bool MPU6050Driver::readSample(float* ax, float* ay, float* az, float* gx, float
 
 void MPU6050Driver::update() {
     if (!_connected) {
-        // Cheap re-init every 0.5 s (a few register writes, < 2 ms)
-        if (millis() - _lastReconnectMs < 500) return;
+        // Cheap re-init every 100 ms (a few register writes, < 2 ms). Was 500 ms:
+        // each EMI burst became >= 0.5 s of FAULT on the crane (MS, 18 Nov).
+        if (millis() - _lastReconnectMs < 100) return;
         _lastReconnectMs = millis();
         if (configure()) {
             _connected = true;

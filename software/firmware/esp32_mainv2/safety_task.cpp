@@ -49,7 +49,7 @@ void safety_init() {
         _chartSeq++;
         Serial.printf("Load chart: %s (%ux%u, %u zones)\n", c.name, c.nA, c.nE, c.nZ);
     } else {
-        Serial.println("Load chart: NONE (SLI in FAULT: only boom up / retract / pay out)");
+        Serial.println("Load chart: NONE (SLI in FAULT: only retract / pay out / boom down)");
     }
     p.end();
 }
@@ -243,6 +243,9 @@ void safetyTask(void* pvParameters) {
     uint32_t  cycle = 0;
     RateEstimator rates;
     uint32_t  lastEvalMs = millis();
+    uint8_t   lastValidBlocked = 0;   // blocked mask of the last non-FAULT evaluation
+    SliState  lastValidState   = SLI_FAULT;   // none yet: no grace until one valid evaluation
+    uint32_t  lastValidMs      = 0;
 
     for (;;) {
         esp_task_wdt_reset();
@@ -279,7 +282,26 @@ void safetyTask(void* pvParameters) {
         in.swingRate = rates.rSwing;
         in.cutMode   = cutMode;
 
-        const SafetyResult r = sli_evaluate(chartValid ? &chart : nullptr, in, prevState);
+        SafetyResult r = sli_evaluate(chartValid ? &chart : nullptr, in, prevState);
+        // A FAULT never unlocks what the last valid evaluation had cut: the pose is
+        // unknown, so "it was unsafe a moment ago" is the best information there is.
+        // (Hole found by MS, 18 Nov: CUT -> IMU dropout -> FAULT freed boom up.)
+        // Boom down stays free if the build allows it, like everywhere else.
+        // Grace (MS, 18 Nov): a short IMU dropout from the OK range keeps the last
+        // valid decision instead of stopping the crane (sli_faultBlocked, SLI_FAULT_GRACE_MS).
+        // Pose-only = the boom angle (IMU / boom encoder) or a busy mutex (sensorFault 0);
+        // a load-cell, swing or telescope fault is never graced.
+        if (r.state == SLI_FAULT) {
+            const bool poseOnly = r.reason == SLI_WHY_SENSOR &&
+                                  (sensorFault & ~(SENSOR_FAULT_IMU | SENSOR_FAULT_BOOM)) == 0;
+            r.blocked = sli_faultBlocked(r.blocked, lastValidBlocked, lastValidState, now - lastValidMs, poseOnly);
+            if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
+            r.blocked |= sli_travelLimits(in);
+        } else {
+            lastValidBlocked = r.blocked;
+            lastValidState   = r.state;
+            lastValidMs      = now;
+        }
         if (r.state != prevState) serialLine("$EV,%lu,SLI,%s,%.1f", (unsigned long)now, sli_stateName(r.state), r.pct);
 
         const uint8_t limits = sli_travelLimits(in);
