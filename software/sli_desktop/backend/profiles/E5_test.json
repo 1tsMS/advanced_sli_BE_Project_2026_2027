@@ -1,0 +1,53 @@
+{
+  "name": "E5 test",
+  "description": "Test chart for E5 (cut rules), 17 Nov. Capacity falls linearly with boom angle (1.20 kg at 0 deg -> 0.80 at 50 deg), same at every extension, so the 0.950 kg coin box reaches WARN (90 %) near 18 deg and CUT (100 %) near 31 deg, mid-range where the motor has margin. Not a real rating.",
+  "anglesDeg": [
+    0.0,
+    10.0,
+    20.0,
+    30.0,
+    40.0,
+    50.0
+  ],
+  "extensionsMM": [
+    0.0,
+    20.0,
+    45.0
+  ],
+  "capacityKg": [
+    [
+      1.2,
+      1.2,
+      1.2
+    ],
+    [
+      1.12,
+      1.12,
+      1.12
+    ],
+    [
+      1.04,
+      1.04,
+      1.04
+    ],
+    [
+      0.96,
+      0.96,
+      0.96
+    ],
+    [
+      0.88,
+      0.88,
+      0.88
+    ],
+    [
+      0.8,
+      0.8,
+      0.8
+    ]
+  ],
+  "zones": [],
+  "warnPct": 90.0,
+  "cutPct": 100.0,
+  "updated": "2026-11-17T17:01:06"
+}

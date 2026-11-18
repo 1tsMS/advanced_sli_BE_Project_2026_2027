@@ -1,0 +1,41 @@
+{
+  "name": "Demo 1kg",
+  "description": "Demo chart, 18 Nov. Capacity = CUT point. Retracted: CUT 1.05 kg at every angle, WARN at 95 % (about 1.00 kg), so the 0.950 kg coin box lifts through the full range in OK. 20 mm extension: 1.05 kg at 0 deg, 0.97 at 7 deg, 0.89 at 12.5, 0.84 at 50 (the box cuts at about 8 deg; 1.07 kg stalled at about 6 deg here on 9 Nov). 45 mm: 0.63 kg (old-top test x 1.05, recheck).",
+  "anglesDeg": [
+    0.0,
+    7.0,
+    12.5,
+    50.0
+  ],
+  "extensionsMM": [
+    0.0,
+    20.0,
+    45.0
+  ],
+  "capacityKg": [
+    [
+      1.05,
+      1.05,
+      0.63
+    ],
+    [
+      1.05,
+      0.97,
+      0.63
+    ],
+    [
+      1.05,
+      0.89,
+      0.63
+    ],
+    [
+      1.05,
+      0.84,
+      0.63
+    ]
+  ],
+  "zones": [],
+  "warnPct": 95.0,
+  "cutPct": 100.0,
+  "updated": "2026-11-18T11:06:33"
+}
