@@ -73,6 +73,11 @@ static void test_unplugged_cell_reads_near_zero() {
     LoadCellMonitor f;
     for (int i = 0; i < 40; i++) f.push(1022447 + (i % 7) * 650, (1022447 - 574841) / SCALE, 574841);
     CHECK(f.health() == LC_HEALTH_OK);
+    // New cell, 19 Nov: zero -51228. A real ~0.12 kg load puts raw near 0 (+5000):
+    // must stay OK (the reading is ABOVE the tare zero), even for many samples
+    LoadCellMonitor c;
+    for (int i = 0; i < 40; i++) c.push(5000 + (i % 5) * 40, (5000 + 51228) / SCALE, -51228);
+    CHECK(c.health() == LC_HEALTH_OK);
     // A cell whose own zero is near 0 can't be told apart: never flagged
     LoadCellMonitor n;
     for (int i = 0; i < 40; i++) n.push(2180 + (i % 5) * 10, 0.0f, 3000);

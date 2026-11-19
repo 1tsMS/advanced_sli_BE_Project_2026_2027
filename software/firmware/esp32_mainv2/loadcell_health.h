@@ -17,6 +17,9 @@
 //               4 wires out: raw 2161..2225 (old HX711); white (S-) wire broken on the
 //               new board (16 Nov): raw 4400..5700, box or not. The cell's own zero is
 //               ~575 000 on both boards (the offset belongs to the bridge, not the HX711).
+//               Also needs the reading BELOW the tare zero (kg < 0): a cell whose zero is
+//               negative (new cell 19 Nov: zero -51 228) passes raw ~0 on its way up under a
+//               real load, which must not trip. A broken wire on the old cell read -1.2 kg.
 //               Needs |tare offset| > OPEN_MIN_OFFSET,
 //               so a cell whose natural zero happens to be near 0 can't use this check.
 //  Each needs to persist (a few samples / ~1 s) before it counts, so a single
@@ -56,12 +59,13 @@ public:
     static constexpr int32_t OPEN_BAND       = 10000; // |raw| below this = "near 0 counts"
     static constexpr int32_t OPEN_MIN_OFFSET = 40000; // only when the tare zero is at least this far from 0
     static constexpr uint8_t OPEN_SAMPLES    = 10;    // ~1 s at 10 SPS
+    static constexpr float   OPEN_BELOW_KG   = -0.05f; // and the reading must be below the tare zero
 
     /** One conversion. kg = (raw - tare offset) / scale, before any clamping; offset = tare (0 = none). */
     void push(int32_t raw, float kg, int32_t offset = 0) {
         _rail = (raw >= RAIL || raw <= -RAIL) ? (uint8_t)(_rail < 255 ? _rail + 1 : 255) : 0;
         _neg  = (kg < NEG_KG) ? (uint8_t)(_neg < 255 ? _neg + 1 : 255) : 0;
-        const bool openNow = (raw > -OPEN_BAND && raw < OPEN_BAND) &&
+        const bool openNow = (raw > -OPEN_BAND && raw < OPEN_BAND) && kg < OPEN_BELOW_KG &&
                              (offset >= OPEN_MIN_OFFSET || offset <= -OPEN_MIN_OFFSET);
         _open = openNow ? (uint8_t)(_open < 255 ? _open + 1 : 255) : 0;
 

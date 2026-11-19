@@ -47,7 +47,8 @@ def test_upload_lines_pass_the_router_whitelist():
     assert cmds[2] == "LC E 22.4 67.4"
     assert cmds[3] == "LC R 0 0.6 0.42"
     assert "LC Z 135 225 0.5" in cmds
-    assert cmds[-2] == "LC P 90 100" and cmds[-1] == "LC COMMIT"
+    assert cmds[-3] == "LC P 90 100" and cmds[-1] == "LC COMMIT"
+    assert cmds[-2] == "LC L -0.5 -1000"      # travel stops: default boom stop, no telescope stop
     for c in cmds:
         assert router._is_valid(c), c
         assert len(c) < 128          # firmware line buffer
