@@ -49,9 +49,11 @@ static bool retractNeverWorse(const LoadChart& c) {
     return true;
 }
 
-uint8_t sli_travelLimits(const SafetyInputs& in) {
+uint8_t sli_travelLimits(const SafetyInputs& in, const LoadChart* chart) {
+    const float boomMin = chart ? chart->boomMinDeg : SLI_BOOM_MIN_DEG;
     uint8_t m = 0;
-    if (isfinite(in.boomDeg) && in.boomDeg <= SLI_BOOM_MIN_DEG) m |= sli_bit(2, 0);   // boom down
+    if (isfinite(in.boomDeg) && in.boomDeg <= boomMin) m |= sli_bit(2, 0);              // boom down
+    if (chart && isfinite(in.extMm) && in.extMm <= chart->extMinMm) m |= sli_bit(3, 0); // retract
     return m;
 }
 
@@ -81,7 +83,7 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
         if (chart && boomUpNeverWorse(*chart))        allow |= sli_bit(2, 1);
         r.blocked = (uint8_t)~allow;
         if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
-        r.blocked |= sli_travelLimits(in);
+        r.blocked |= sli_travelLimits(in, chart);
         return r;
     }
 
@@ -125,7 +127,7 @@ SafetyResult sli_evaluate(const LoadChart* chart, const SafetyInputs& in, SliSta
     // Hoisting can only add load: cut it while overloaded
     if (r.state == SLI_CUT) r.blocked |= sli_bit(4, SLI_WINCH_HOIST_DIR);
     if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
-    r.blocked |= sli_travelLimits(in);
+    r.blocked |= sli_travelLimits(in, chart);
     if (r.pct > SLI_PCT_MAX) r.pct = SLI_PCT_MAX;   // the distance term is internal only
     return r;
 }

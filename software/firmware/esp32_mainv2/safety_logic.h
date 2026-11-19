@@ -133,7 +133,8 @@ inline uint8_t sli_bit(uint8_t axis, uint8_t dir) {
 }
 
 /** Motions past a mechanical end stop (bits as in SafetyResult::blocked). Armed only. */
-uint8_t sli_travelLimits(const SafetyInputs& in);
+/** chart = nullptr: built-in boom stop SLI_BOOM_MIN_DEG only; else the chart's boomMinDeg / extMinMm. */
+uint8_t sli_travelLimits(const SafetyInputs& in, const LoadChart* chart);
 
 /**
  * One evaluation. chart = nullptr when no valid chart is loaded.

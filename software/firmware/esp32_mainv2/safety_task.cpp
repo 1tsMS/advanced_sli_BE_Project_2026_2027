@@ -170,6 +170,7 @@ static void printChart() {
         serialLine("$LC,Z,%.1f,%.1f,%.3f", c.zones[z].fromDeg, c.zones[z].toDeg, c.zones[z].factor);
     }
     serialLine("$LC,P,%.1f,%.1f", c.warnPct, c.cutPct);
+    serialLine("$LC,L,%.2f,%.1f", c.boomMinDeg, c.extMinMm);
     serialLine("$LC,END");
 }
 
@@ -296,7 +297,7 @@ void safetyTask(void* pvParameters) {
                                   (sensorFault & ~(SENSOR_FAULT_IMU | SENSOR_FAULT_BOOM)) == 0;
             r.blocked = sli_faultBlocked(r.blocked, lastValidBlocked, lastValidState, now - lastValidMs, poseOnly);
             if (SLI_BOOM_DOWN_ALWAYS) r.blocked &= (uint8_t)~sli_bit(2, 0);
-            r.blocked |= sli_travelLimits(in);
+            r.blocked |= sli_travelLimits(in, chartValid ? &chart : nullptr);
         } else {
             lastValidBlocked = r.blocked;
             lastValidState   = r.state;
@@ -304,7 +305,7 @@ void safetyTask(void* pvParameters) {
         }
         if (r.state != prevState) serialLine("$EV,%lu,SLI,%s,%.1f", (unsigned long)now, sli_stateName(r.state), r.pct);
 
-        const uint8_t limits = sli_travelLimits(in);
+        const uint8_t limits = sli_travelLimits(in, chartValid ? &chart : nullptr);
         taskENTER_CRITICAL(&_mux);
         _blocked = r.blocked;
         _limits  = limits;

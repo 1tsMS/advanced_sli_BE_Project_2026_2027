@@ -12,12 +12,12 @@ const SERIES_POINTS = 1500;
 
 type StateFilter = "all" | "alarm";
 
-/** Time spans where the SLI state is WARN or CUT (for shading). */
+/** Time spans where the SLI state is WARN, CUT or FAULT (for shading). */
 function stateSpans(rows: LiftRow[]): { t0: number; t1: number; state: string }[] {
   const out: { t0: number; t1: number; state: string }[] = [];
   let prev = "";
   for (const r of rows) {
-    const s = r.state === "WARN" || r.state === "CUT" ? r.state : "";
+    const s = r.state === "WARN" || r.state === "CUT" || r.state === "FAULT" ? r.state : "";
     if (s && s === prev) out[out.length - 1].t1 = r.t;     // span continues
     else if (s) out.push({ t0: r.t, t1: r.t, state: s });  // new span
     prev = s;
@@ -78,8 +78,21 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
         : { ...r, load: null as unknown as number, pct: null, boom: null, swing: null, ext: null, hookDrop: null, tipMargin: null });
     }
     // commands as lanes: swing 4, boom 3, telescope 2, winch 1, +-0.3 for direction
-    return v.map(r => ({ ...r, c1: 4 + 0.3 * r.m1, c2: 3 + 0.3 * r.m2, c3: 2 + 0.3 * r.m3, c4: 1 + 0.3 * r.m4,
-                          tip: r.tipValid ? r.tipMargin : null }));
+    // FAULT samples (sensor dropout): the ESP32 reports 0 % / 0 kg and a held boom
+    // angle, which drew a wall of vertical lines. Blank them instead (the solid line
+    // breaks); the *Gap series keep the same values and connect across the blank as
+    // a faint dotted bridge, and a grey band marks the dropout.
+    return v.map(r => {
+      const fault = r.state === "FAULT";
+      // Outside the chart (e.g. boom resting at -1 deg, below the 0 deg row) the ESP32
+      // reports 999 % / capacity 0: not a load, so blank it too instead of a spike.
+      const outside = r.pct !== null && r.pct >= 500;
+      const pct = fault || outside ? null : r.pct, capKg = fault || outside ? null : r.capKg;
+      const boom = fault ? null : r.boom;
+      return { ...r, pct, capKg, boom, pctGap: pct, capGap: capKg, boomGap: boom,
+               c1: 4 + 0.3 * r.m1, c2: 3 + 0.3 * r.m2, c3: 2 + 0.3 * r.m3, c4: 1 + 0.3 * r.m4,
+               tip: r.tipValid ? r.tipMargin : null };
+    });
   }, [rows, range, filter]);
   const spans = useMemo(() => (rows ? stateSpans(rows) : []), [rows]);
   const phases = report?.ok ? report.phases : [];
@@ -110,8 +123,9 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
         <ReferenceArea key={`p${i}`} x1={p.t0} x2={p.t1} fill={PHASE_COLOR[p.name]} fillOpacity={0.10} ifOverflow="hidden" />
       ))}
       {spans.map((s, i) => (
-        <ReferenceArea key={`s${i}`} x1={s.t0} x2={Math.max(s.t1, s.t0 + 0.05)} fill={s.state === "CUT" ? C.crit : C.warn}
-                       fillOpacity={0.16} ifOverflow="hidden" />
+        <ReferenceArea key={`s${i}`} x1={s.t0} x2={Math.max(s.t1, s.t0 + 0.05)}
+                       fill={s.state === "CUT" ? C.crit : s.state === "WARN" ? C.warn : C.fault}
+                       fillOpacity={s.state === "FAULT" ? 0.22 : 0.16} ifOverflow="hidden" />
       ))}
     </>
   );
@@ -167,7 +181,8 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
       <ChartGrid>
         <ChartCard title="Load vs rated capacity" height={220}
                    legend={[{ label: "Load", color: C.s1 }, { label: "Rated capacity", color: C.ref, dashed: true },
-                            { label: "WARN / CUT", color: C.warn, band: true }]}>
+                            { label: "WARN / CUT", color: C.warn, band: true },
+                            { label: "Sensor dropout", color: C.fault, band: true }]}>
           <ResponsiveContainer>
             <LineChart data={view} margin={margin} syncId="lift">
               <CartesianGrid stroke={C.grid} vertical={false} />
@@ -179,6 +194,8 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
                                label={{ value: `DAF ${p.daf.toFixed(2)}`, fill: C.axis, fontSize: "var(--fs-xs)", position: "insideTopRight" }} />
               ))}
               <Tooltip content={<TipBox unit={{ Load: " kg", "Rated capacity": " kg" }} />} isAnimationActive={false} />
+              <Line dataKey="capGap" stroke={C.ref} strokeDasharray="1 4" strokeOpacity={0.5} strokeWidth={1} dot={false}
+                    connectNulls legendType="none" tooltipType="none" isAnimationActive={false} />
               <Line dataKey="capKg" name="Rated capacity" stroke={C.ref} strokeDasharray="5 4" strokeWidth={1.5} dot={false} isAnimationActive={false} />
               <Line dataKey="load" name="Load" stroke={C.s1} strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
@@ -195,6 +212,8 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
               <ReferenceLine y={warnPct} stroke={C.warn} strokeDasharray="3 3" />
               <ReferenceLine y={cutPct} stroke={C.crit} strokeDasharray="3 3" />
               <Tooltip content={<TipBox unit={{ "Load %": "%" }} />} isAnimationActive={false} />
+              <Line dataKey="pctGap" stroke={C.s1} strokeDasharray="1 4" strokeOpacity={0.5} strokeWidth={1.5} dot={false}
+                    connectNulls legendType="none" tooltipType="none" isAnimationActive={false} />
               <Line dataKey="pct" name="Load %" stroke={C.s1} strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
@@ -208,6 +227,8 @@ export function LiftReview({ liftId, report }: { liftId: string; report: LiftRep
               {X}
               <YAxis tick={AXIS_TICK} stroke={C.grid} unit="°" width={52} />
               <Tooltip content={<TipBox unit={{ Boom: "°", Swing: "°" }} />} isAnimationActive={false} />
+              <Line dataKey="boomGap" stroke={C.s1} strokeDasharray="1 4" strokeOpacity={0.5} strokeWidth={1.5} dot={false}
+                    connectNulls legendType="none" tooltipType="none" isAnimationActive={false} />
               <Line dataKey="boom" name="Boom" stroke={C.s1} strokeWidth={2} dot={false} isAnimationActive={false} />
               <Line dataKey="swing" name="Swing" stroke={C.s2} strokeWidth={2} dot={false} isAnimationActive={false} />
             </LineChart>

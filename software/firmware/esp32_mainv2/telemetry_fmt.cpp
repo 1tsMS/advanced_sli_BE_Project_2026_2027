@@ -118,9 +118,10 @@ void TelemetryFormatter::formatDebugReport(
                diag.stageMaxMs[0], diag.stageMaxMs[1], diag.stageMaxMs[2], diag.stageMaxMs[3],
                diag.stageMaxMs[4], diag.stageMaxMs[5],
                diag.periodMaxMs > 1.5f * SENSOR_PERIOD_MS ? "SLOW" : "OK");
-    DBG_APPEND("$D,IMU_DROPOUTS,reinit:%lu rejected:%lu accel_scale:%.3f,%s\n",
-               (unsigned long)diag.imuReconnects, (unsigned long)diag.imuRejected, diag.imuAccelScale,
-               diag.imuReconnects ? "NOISY" : "OK");
+    DBG_APPEND("$D,IMU_DROPOUTS,reinit:%lu cfg:%lu grav:%lu rejected:%lu accel_scale:%.3f,%s\n",
+               (unsigned long)diag.imuReconnects, (unsigned long)diag.imuCfgFaults, (unsigned long)diag.imuGravityFaults,
+               (unsigned long)diag.imuRejected, diag.imuAccelScale,
+               (diag.imuCfgFaults || diag.imuGravityFaults) ? "FAULTY" : diag.imuReconnects ? "NOISY" : "OK");
 
     // RTOS health: stack headroom per task (bytes never used), serial queue, flash, reset cause
     bool stackLow = false;

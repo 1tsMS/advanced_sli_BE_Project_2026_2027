@@ -41,6 +41,7 @@ function blankProfile(name: string): LoadChartProfile {
   return {
     name, description: "", anglesDeg: [0, 10, 20], extensionsMM: [0, 45],
     capacityKg: [[0.1, 0.1], [0.1, 0.1], [0.1, 0.1]], zones: [], warnPct: 90, cutPct: 100,
+    boomMinDeg: -0.5, extMinMm: null,
   };
 }
 
@@ -311,6 +312,17 @@ export function LoadChartTab({ frame, safety, craneChart, lcResult }: LoadChartT
                 <span>Cut %</span>
                 <input className="tele-input lc-num" type="number" value={draft.cutPct}
                        onChange={e => edit({ ...draft, cutPct: Number(e.target.value) })} />
+              </label>
+              <label className="lc-field" title="No boom DOWN at or below this angle while armed">
+                <span>Boom stop °</span>
+                <input className="tele-input lc-num" type="number" step="0.1" value={draft.boomMinDeg ?? -0.5}
+                       onChange={e => edit({ ...draft, boomMinDeg: Number(e.target.value) })} />
+              </label>
+              <label className="lc-field" title="No RETRACT at or below this extension while armed. Empty = no telescope stop">
+                <span>Tele stop mm</span>
+                <input className="tele-input lc-num" type="number" step="0.5" placeholder="none"
+                       value={draft.extMinMm ?? ""}
+                       onChange={e => edit({ ...draft, extMinMm: e.target.value === "" ? null : Number(e.target.value) })} />
               </label>
             </div>
             <label className="lc-field">

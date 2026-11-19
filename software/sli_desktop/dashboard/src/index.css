@@ -1373,7 +1373,7 @@ button.sli-opt:hover, div.sli-opt:hover { background: var(--surface-2); }
 .lc-field.grow { flex: 1; min-width: 140px; }
 .lc-field.grow .tele-input { width: 100%; }
 .lc-wide { width: 100% !important; font-family: var(--font-sans) !important; }
-.lc-num { width: 64px !important; }
+.lc-num { width: 84px !important; }   /* fits "-0.5" / "none" with the number spinner */
 .lc-k { font-size: var(--fs-sm); color: var(--text-muted); }
 
 .lc-table-wrap { overflow-x: auto; }

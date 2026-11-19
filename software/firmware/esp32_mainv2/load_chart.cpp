@@ -55,6 +55,8 @@ LcParse lc_parse(LoadChartStage* st, const char* args, const char** why) {
         st->chart.nE      = (uint8_t)nE;
         st->chart.warnPct = 90.0f;
         st->chart.cutPct  = 100.0f;
+        st->chart.boomMinDeg = LC_DEFAULT_BOOM_MIN;
+        st->chart.extMinMm   = LC_EXT_MIN_OFF;
         strncpy(st->chart.name, *p ? p : "UNNAMED", LC_NAME_LEN - 1);
         st->begun = true;
         return LC_PARSE_OK;
@@ -99,6 +101,13 @@ LcParse lc_parse(LoadChartStage* st, const char* args, const char** why) {
         c.cutPct  = v[1];
         return LC_PARSE_OK;
     }
+    if (takeWord(&p, "L")) {
+        float v[2];
+        if (!readFloats(p, v, 2)) { *why = "L_COUNT"; return LC_PARSE_ERR; }
+        c.boomMinDeg = v[0];
+        c.extMinMm   = v[1];
+        return LC_PARSE_OK;
+    }
     *why = "UNKNOWN";
     return LC_PARSE_ERR;
 }
@@ -138,6 +147,8 @@ bool lc_validate(const LoadChart& c, const char** why) {
     }
     if (!(c.cutPct > 0.0f && c.cutPct <= 150.0f))        { *why = "CUT_PCT";    return false; }
     if (!(c.warnPct > 0.0f && c.warnPct < c.cutPct))     { *why = "WARN_PCT";   return false; }
+    if (!(c.boomMinDeg >= -30.0f && c.boomMinDeg <= 30.0f))  { *why = "L_BOOM";  return false; }
+    if (!(c.extMinMm >= LC_EXT_MIN_OFF && c.extMinMm <= 1000.0f)) { *why = "L_EXT"; return false; }
     if (memchr(c.name, '\0', LC_NAME_LEN) == NULL)       { *why = "NAME";       return false; }
     return true;
 }

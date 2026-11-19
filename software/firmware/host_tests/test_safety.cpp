@@ -346,13 +346,37 @@ static void test_boom_travel_limit() {
     const LoadChart c = buildChart();
     // Boom on its stop (IMU below -0.5 deg): boom down cut, in every state, even with no chart
     SafetyInputs low = pose(-0.6f, 40, 0, 0.1f);
-    CHECK(sli_travelLimits(low) == sli_bit(2, 0));
+    CHECK(sli_travelLimits(low, nullptr) == sli_bit(2, 0));
+    CHECK(sli_travelLimits(low, &c) == sli_bit(2, 0));               // chart default -0.5, ext stop off
     CHECK(blocked(sli_evaluate(&c, low, SLI_OK), 2, 0));
     CHECK(blocked(sli_evaluate(nullptr, low, SLI_OK), 2, 0));         // FAULT keeps the end stop too
     CHECK(!blocked(sli_evaluate(&c, low, SLI_OK), 2, 1));             // boom up still free
     // Just above the stop: free
-    CHECK(sli_travelLimits(pose(-0.4f, 40, 0, 0.1f)) == 0);
-    CHECK(sli_travelLimits(pose(NAN, 40, 0, 0.1f)) == 0);
+    CHECK(sli_travelLimits(pose(-0.4f, 40, 0, 0.1f), &c) == 0);
+    CHECK(sli_travelLimits(pose(NAN, 40, 0, 0.1f), &c) == 0);
+}
+
+/** Per-chart stops (LC L): boom min and telescope min set by MS (19 Nov). */
+static void test_chart_travel_stops() {
+    LoadChartStage st;
+    const char* why;
+    for (const char* line : CHART) CHECK(lc_parse(&st, line, &why) == LC_PARSE_OK);
+    CHECK(lc_parse(&st, "L -0.1 5", &why) == LC_PARSE_OK);
+    CHECK(lc_parse(&st, "COMMIT", &why) == LC_PARSE_COMMIT);
+    CHECK(lc_validate(st.chart, &why));
+    const LoadChart& c = st.chart;
+    CHECK_NEAR(c.boomMinDeg, -0.1, 1e-6);
+    CHECK_NEAR(c.extMinMm, 5.0, 1e-6);
+    CHECK(sli_travelLimits(pose(-0.2f, 40, 0, 0.1f), &c) == sli_bit(2, 0));   // below -0.1: boom down cut
+    CHECK(sli_travelLimits(pose(0.0f, 40, 0, 0.1f), &c) == 0);
+    CHECK(sli_travelLimits(pose(10, 5.0f, 0, 0.1f), &c) == sli_bit(3, 0));    // at 5 mm: retract cut
+    CHECK(sli_travelLimits(pose(10, 6.0f, 0, 0.1f), &c) == 0);
+    CHECK(!blocked(sli_evaluate(&c, pose(10, 4.0f, 0, 0.1f), SLI_OK), 3, 1)); // extend stays free
+    // Out-of-range stops are rejected
+    LoadChart bad = c;
+    bad.boomMinDeg = -45.0f;
+    CHECK(!lc_validate(bad, &why));
+    CHECK(lc_parse(&st, "L 1", &why) == LC_PARSE_ERR);
 }
 
 int main() {
@@ -374,5 +398,6 @@ int main() {
     test_boom_travel_limit();
     test_fault_from_chart();
     test_fault_grace();
+    test_chart_travel_stops();
     return check_summary("safety");
 }

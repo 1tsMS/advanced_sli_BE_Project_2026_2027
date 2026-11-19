@@ -25,6 +25,10 @@ public:
     bool begin();
 
     bool isConnected() const { return _connected; }
+    /** false while |accel| has been off 1 g for > 2 s (mis-scaled: angle not trustworthy). */
+    bool isTrusted() const { return _trusted; }
+    uint32_t cfgFaults()     const { return _cfgFaults; }       // ranges found changed -> re-init
+    uint32_t gravityFaults() const { return _gravityFaults; }   // gravity guard trips
 
     /** Read one sample and update the filter. Call at 100 Hz. */
     void update();
@@ -98,6 +102,23 @@ private:
     bool     _calDone = false;
 
     void finishCalibration(const CalSums& c);
+
+    // Config read-back and periodic check (19 Nov)
+    static constexpr uint32_t CFG_CHECK_MS = 1000;
+    uint32_t _lastCfgCheckMs = 0;
+    uint32_t _cfgFaults = 0;
+    bool configMatches(bool* readOk = nullptr);
+
+    // Gravity guard: |a| outside 1 g +-15 % for 2 s -> untrusted; 0.5 s good -> re-seed
+    static constexpr float    GRAVITY_BAND            = 0.15f;
+    static constexpr uint16_t GRAVITY_TRIP_SAMPLES    = 200;
+    static constexpr uint16_t GRAVITY_RECOVER_SAMPLES = 50;
+    bool     _trusted = true;
+    uint16_t _offGRun = 0;
+    Vec3     _recoverSum = { 0.0f, 0.0f, 0.0f };
+    uint16_t _recoverN = 0;
+    uint32_t _gravityFaults = 0;
+    void gravityGuard(const Vec3& a);
 
     bool configure();
     /** Read accel + gyro (raw sensor units -> m/s^2, deg/s without offsets). */

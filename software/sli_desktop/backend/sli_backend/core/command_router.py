@@ -35,6 +35,7 @@ _VALID_PATTERNS = [
     re.compile(r"^LC\s+R\s+[0-7](\s+\d+(\.\d+)?){2,6}$"),
     re.compile(r"^LC\s+Z(\s+\d+(\.\d+)?){3}$"),
     re.compile(r"^LC\s+P(\s+\d+(\.\d+)?){2}$"),
+    re.compile(r"^LC\s+L(\s+-?\d+(\.\d+)?){2}$"),                # travel stops: boom min deg, ext min mm
     re.compile(r"^LC\s+(COMMIT|GET)$"),
     re.compile(r"^SLI\s+(ON|OFF|BYPASS\s+\d{1,3})$"),                # Arm / off / timed bypass (<= 600 s on the ESP32)
     re.compile(r"^SLI\s+CUT\s+[PRS]$"),                              # Cut mode: predictive / reactive / speed-aware

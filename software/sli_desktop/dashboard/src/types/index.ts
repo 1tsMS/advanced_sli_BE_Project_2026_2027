@@ -183,6 +183,8 @@ export interface LoadChartProfile {
   zones: LoadZone[];
   warnPct: number;
   cutPct: number;
+  boomMinDeg?: number;          // travel stop: no boom down at/below this (default -0.5)
+  extMinMm?: number | null;     // travel stop: no retract at/below this (null = none)
   updated?: string | null;
 }
 

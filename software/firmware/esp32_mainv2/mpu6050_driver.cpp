@@ -16,12 +16,40 @@ static const uint8_t REG_WHO_AM_I     = 0x75;
 static const float ACCEL_LSB_PER_G  = 4096.0f;   // +/-8 g
 static const float GYRO_LSB_PER_DPS = 65.5f;     // +/-500 deg/s
 
+// Values written by configure(); configMatches() compares only these fields
+static const uint8_t CFG_CONFIG = 0x04;   // DLPF 21 Hz (~8.5 ms delay): anti-alias for 100 Hz
+static const uint8_t CFG_GYRO   = 0x08;   // FS_SEL 1: +/-500 deg/s
+static const uint8_t CFG_ACCEL  = 0x10;   // AFS_SEL 2: +/-8 g
+
+/**
+ * Do registers 0x19..0x1C (SMPLRT_DIV, CONFIG, GYRO_CONFIG, ACCEL_CONFIG) hold
+ * what configure() wrote? Only the fields we set are compared (DLPF, full-scale
+ * ranges), so a clone's reserved bits can't fail it. false on a failed read
+ * (and *readOk = false, when given).
+ */
+bool MPU6050Driver::configMatches(bool* readOk) {
+    uint8_t r[4];
+    const bool ok = _bus->readRegs(_addr, REG_SMPLRT_DIV, r, sizeof(r));
+    if (readOk) *readOk = ok;
+    if (!ok) return false;
+    return r[0] == 0x00 &&
+           (r[1] & 0x07) == CFG_CONFIG &&
+           (r[2] & 0x18) == CFG_GYRO &&
+           (r[3] & 0x18) == CFG_ACCEL;
+}
+
 bool MPU6050Driver::configure() {
+    // Written, then READ BACK (MS, 19 Nov): a write that ACKs can still land wrong
+    // under EMI. A wrong full-scale range silently mis-scales every sample: the
+    // accel leaves the 1 g gate (no correction) and the gyro bias no longer
+    // matches, so the boom angle spun at -3.5 deg/s while the raw angle was right.
+    // A failed check just returns false: update() writes again 100 ms later.
     return _bus->writeReg(_addr, REG_PWR_MGMT_1,   0x01) &&   // wake, clock = PLL gyro X
            _bus->writeReg(_addr, REG_SMPLRT_DIV,   0x00) &&
-           _bus->writeReg(_addr, REG_CONFIG,       0x04) &&   // DLPF 21 Hz (~8.5 ms delay): anti-alias for 100 Hz
-           _bus->writeReg(_addr, REG_GYRO_CONFIG,  0x08) &&   // +/-500 deg/s
-           _bus->writeReg(_addr, REG_ACCEL_CONFIG, 0x10);     // +/-8 g
+           _bus->writeReg(_addr, REG_CONFIG,       CFG_CONFIG) &&
+           _bus->writeReg(_addr, REG_GYRO_CONFIG,  CFG_GYRO) &&
+           _bus->writeReg(_addr, REG_ACCEL_CONFIG, CFG_ACCEL) &&
+           configMatches();
 }
 
 bool MPU6050Driver::begin() {
@@ -69,8 +97,21 @@ void MPU6050Driver::update() {
             _connected = true;
             _reconnects++;
             _lastUpdateUs = micros();
+            _lastCfgCheckMs = millis();
         }
         return;
+    }
+
+    // Once a second: are the ranges still what we set? (A read that fails proves
+    // nothing and is ignored; a read that shows other ranges forces a re-init.)
+    if (millis() - _lastCfgCheckMs >= CFG_CHECK_MS) {
+        _lastCfgCheckMs = millis();
+        bool readOk;
+        if (!configMatches(&readOk) && readOk) {
+            _cfgFaults++;
+            _connected = false;
+            return;
+        }
     }
 
     float ax, ay, az, gx, gy, gz;
@@ -129,6 +170,35 @@ void MPU6050Driver::update() {
     _rawPitch = accelPitchDeg(a);
     _samples++;
     _out = _filter.update(a, g, dt);
+    gravityGuard(a);
+}
+
+void MPU6050Driver::gravityGuard(const Vec3& a) {
+    // On a slow crane |a| is ~1 g except for short jerks. Off by more than the
+    // filter's gate for 2 s = the accel is mis-scaled (wrong range, bad calibration)
+    // and the angle is running on the gyro alone: stop trusting it (SLI -> FAULT).
+    const bool inBand = accelTrust(vecLen(a), GRAVITY_BAND) > 0.0f;
+    if (_trusted) {
+        _offGRun = inBand ? 0 : (uint16_t)(_offGRun + 1);
+        if (_offGRun >= GRAVITY_TRIP_SAMPLES) {
+            _trusted = false;
+            _gravityFaults++;
+            _recoverSum = { 0.0f, 0.0f, 0.0f };
+            _recoverN = 0;
+        }
+        return;
+    }
+    // Untrusted: wait for a run of good samples, then re-seed the angle from the
+    // measured gravity so it snaps back to the truth instead of a 1 s catch-up.
+    if (!inBand) { _recoverN = 0; _recoverSum = { 0.0f, 0.0f, 0.0f }; return; }
+    _recoverSum.x += a.x; _recoverSum.y += a.y; _recoverSum.z += a.z;
+    if (++_recoverN >= GRAVITY_RECOVER_SAMPLES) {
+        const float n = (float)_recoverN;
+        _filter.seed({ _recoverSum.x / n, _recoverSum.y / n, _recoverSum.z / n });
+        _out = { _filter.roll(), _filter.pitch(), 0.0f, 0.0f };
+        _trusted = true;
+        _offGRun = 0;
+    }
 }
 
 void MPU6050Driver::finishCalibration(const CalSums& c) {

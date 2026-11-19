@@ -23,6 +23,7 @@ MAX_ZONES = 4
 MAX_CAP_KG = 10.0
 NAME_RE = re.compile(r"^[\w .-]{1,15}$", re.ASCII)   # LC_NAME_LEN 16 incl. the terminator: ASCII only
 MIN_CAP_KG = 0.001   # smallest value that survives the 3-decimal upload format
+EXT_MIN_OFF = -1000  # LC_EXT_MIN_OFF: "no telescope stop"
 
 
 def validate(p: LoadChartProfile) -> Optional[str]:
@@ -59,6 +60,10 @@ def validate(p: LoadChartProfile) -> Optional[str]:
         return "Cut % must be > 0 and <= 150"
     if not (0 < p.warnPct < p.cutPct):
         return "Warn % must be > 0 and below cut %"
+    if not (math.isfinite(p.boomMinDeg) and -30 <= p.boomMinDeg <= 30):
+        return "Boom stop must be -30..30 deg"
+    if p.extMinMm is not None and not (math.isfinite(p.extMinMm) and -999 <= p.extMinMm <= 1000):
+        return "Telescope stop must be a number in mm (or empty for none)"
     return None
 
 
@@ -77,6 +82,7 @@ def to_commands(p: LoadChartProfile) -> list[str]:
     for z in p.zones:
         cmds.append(f"LC Z {_num(z.fromDeg)} {_num(z.toDeg)} {_num(z.factor)}")
     cmds.append(f"LC P {_num(p.warnPct)} {_num(p.cutPct)}")
+    cmds.append(f"LC L {_num(p.boomMinDeg)} {_num(EXT_MIN_OFF if p.extMinMm is None else p.extMinMm)}")
     cmds.append("LC COMMIT")
     return cmds
 
@@ -112,6 +118,10 @@ class ChartReadback:
                 self._cur["zones"].append({"fromDeg": f, "toDeg": t, "factor": k})
             elif tag == "P":
                 self._cur["warnPct"], self._cur["cutPct"] = float(parts[2]), float(parts[3])
+            elif tag == "L":
+                self._cur["boomMinDeg"] = float(parts[2])
+                ext = float(parts[3])
+                self._cur["extMinMm"] = None if ext <= EXT_MIN_OFF else ext
             elif tag == "END":
                 done, self._cur = self._cur, None
                 return done

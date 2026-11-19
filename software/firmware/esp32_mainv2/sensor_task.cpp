@@ -628,7 +628,8 @@ void sensorTask_hwBus(void* pvParameters) {
         static uint32_t okSampleSeen = 0, okSampleMs = 0;
         if (_imu && _imu->sampleCount() != okSampleSeen) { okSampleSeen = _imu->sampleCount(); okSampleMs = millis(); }
         const bool  imuFresh = okSampleMs != 0 && (millis() - okSampleMs) <= IMU_STALE_MS;
-        const bool  imuOK    = _imu && _imu->isConnected() && imuFresh;
+        // ...and trusted: the gravity guard says the accel is still ~1 g (not mis-scaled)
+        const bool  imuOK    = _imu && _imu->isConnected() && imuFresh && _imu->isTrusted();
         const float mpuRoll  = imuOK ? _imu->getRoll()  : 0.0f;
         const float mpuPitch = imuOK ? _imu->getPitch() : 0.0f;
         const float boomBase = (_boomSource == 1) ? mpuPitch : mpuRoll;
@@ -1011,6 +1012,8 @@ void sensorTask(void* pvParameters) {
             if (hw.workMaxMs > _stageMax[STAGE_IMU]) _stageMax[STAGE_IMU] = hw.workMaxMs;   // "hwbus" in DBG
             for (int k = 0; k < STAGE_COUNT; k++) _diag.stageMaxMs[k] = _stageMax[k];
             _diag.imuReconnects = _imu ? _imu->reconnects() : 0;
+            _diag.imuCfgFaults     = _imu ? _imu->cfgFaults() : 0;
+            _diag.imuGravityFaults = _imu ? _imu->gravityFaults() : 0;
             _diag.imuRejected   = hw.imuRejected;
             _diag.imuAccelScale = _imu ? _imu->accelScale() : 0.0f;
 

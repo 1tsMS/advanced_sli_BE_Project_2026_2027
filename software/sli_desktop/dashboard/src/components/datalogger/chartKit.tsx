@@ -16,6 +16,7 @@ export const C = {
   ref: "var(--chart-ref)",   // reference lines (capacity) - neutral, dashed
   warn: "var(--warn)",
   crit: "var(--crit)",
+  fault: "var(--text-3)",    // sensor dropout band: neutral grey, not an alarm colour
   grid: "var(--chart-grid)",
   axis: "var(--chart-axis)",
   surface: "var(--surface)",

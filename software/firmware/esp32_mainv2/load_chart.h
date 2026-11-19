@@ -33,11 +33,16 @@
 #define LC_MAX_EXTS     6
 #define LC_MAX_ZONES    4
 #define LC_NAME_LEN     16
-#define LC_VERSION      1      // bump when the struct layout changes (flash copy is then ignored)
+#define LC_VERSION      2      // bump when the struct layout changes (flash copy is then ignored)
+                               // 2 (19 Nov): per-chart travel stops boomMinDeg / extMinMm
 
 #define LC_TOL_DEG      1.0f   // angle beyond the first/last row still clamped to it
 #define LC_TOL_MM       2.0f   // extension beyond the first/last column still clamped
 #define LC_MAX_CAP_KG   10.0f  // any cell above this is a typo, not a capacity
+// Travel stops carried by the chart (LC L <boomMinDeg> <extMinMm>), enforced while armed:
+// no boom down at or below boomMinDeg, no retract at or below extMinMm.
+#define LC_DEFAULT_BOOM_MIN  -0.5f     // boom resting on its stop reads ~0 deg
+#define LC_EXT_MIN_OFF       -1000.0f  // default: no telescope stop
 
 struct LoadZone {
     float fromDeg, toDeg;      // swing range [from, to), wraps through 360 when from > to
@@ -52,6 +57,7 @@ struct LoadChart {
     float    capKg[LC_MAX_ANGLES][LC_MAX_EXTS];
     LoadZone zones[LC_MAX_ZONES];
     float    warnPct, cutPct;
+    float    boomMinDeg, extMinMm;   // travel stops (see LC_DEFAULT_BOOM_MIN)
     char     name[LC_NAME_LEN];
 };
 

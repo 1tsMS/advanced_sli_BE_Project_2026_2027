@@ -88,6 +88,10 @@ class LoadChartProfile(BaseModel):
     zones:        List[LoadZone] = []
     warnPct:      float = 90.0
     cutPct:       float = 100.0
+    # Travel stops enforced while armed (firmware LC L): no boom down at/below
+    # boomMinDeg, no retract at/below extMinMm (None = no telescope stop)
+    boomMinDeg:   float = -0.5
+    extMinMm:     Optional[float] = None
     updated:      Optional[str] = None     # ISO time, set by the backend on save
 
 
